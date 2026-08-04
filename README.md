@@ -1,84 +1,81 @@
-# Komplex-Code — Template Harness
+# Laptop Tracker — OLX Pakistan Scraper
 
-A **template harness** for running a coding assistant in a steady, repeatable, **user-in-the-loop** way. This repository is not an application. It is a set of instructions, skills, and templates that shape how work gets planned, carried out, and improved over time.
+A Python CLI scraper that fetches recent **laptop listings** from [OLX Pakistan](https://www.olx.com.pk/) for the **Islamabad** and **Rawalpindi** areas, stores them in a local **SQLite** database, and exports to **CSV/JSON**.
 
-`AGENTS.md` here is a **draft** — you adapt it to your project (tech stack, build/test commands) before use.
+The goal is to reliably capture the freshest listings so you can later flag the most lucrative deals (a future, non-ML analysis step).
 
-## What this is
+## Features
 
-When you hand a coding assistant a project, it can drift: it invents details, edits files it should not touch, or repeats the same mistake. This harness prevents that by writing down, in one place, how the assistant should behave — and by keeping two jobs separate:
+- **City-scoped scraping** — targets Islamabad and Rawalpindi only (configurable).
+- **Configurable time window** — look back 12–24 hours (or any value) to catch fresh listings.
+- **Rich data** — title, price (normalized), location, relative posting time, description, image URLs (text only — no image downloads), and the "Featured" flag.
+- **SQLite storage with upserts** — repeated runs insert new listings and update existing ones by OLX item ID, building a clean history over time.
+- **CSV/JSON export** — easy viewing and downstream analysis.
+- **Polite fetching** — realistic browser User-Agent, configurable delay between requests, and retry/backoff on transient failures.
 
-1. **Do the work.** Implement what the plan asks for, verify it, and stop.
-2. **Improve the rules.** Between work sessions, look at what went wrong and make the rules better.
+## Requirements
 
-The person doing the work should not also be the person rewriting the rules, or the rules never get a chance to settle. That is why there are **two skills** that hand off to each other, with a human approving every transition.
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) (package manager)
 
-## How it is organised
+## Setup
 
-```
-AGENTS.md                     The master set of rules (a draft — adapt to your project)
-.agents/skills/
-  implementation/SKILL.md     The "do the work" skill
-  repository-evolution/SKILL.md  The "improve the rules" skill
-.agents/templates/            Blank copies of the working documents
-learnings/
-  pending/                    New learnings awaiting evaluation (the queue)
-  archive/                    Evaluated learnings (historical)
+```bash
+uv sync
 ```
 
-### The two skills
+## Usage
 
-- [`.agents/skills/repository-evolution/SKILL.md`](.agents/skills/repository-evolution/SKILL.md) — the **evolver**. Plans, interviews you, produces `SPECS.md`, and evolves the rules. It asks for your **interviewing verbosity level** (Extreme / Moderate / Low) before interviewing.
-- [`.agents/skills/implementation/SKILL.md`](.agents/skills/implementation/SKILL.md) — the **implementer**. Executes the active `SPECS.md`, verifies each unit, checks off items, and records learnings. It is deliberately not allowed to rewrite the rules.
+```bash
+# Scrape the last 24 hours and export to CSV + JSON
+uv run python -m scraper --hours 24 --export csv json
 
-### The working documents
+# Scrape the last 12 hours, JSON only
+uv run python -m scraper --hours 12 --export json
 
-Created as needed from templates in `.agents/templates/`:
-
-- **`SPECS.md`** — the active plan of what to build. Implementation checks off completed items as it goes.
-- **`BLOCKED.md`** — a record of anything that stopped work, and why.
-- **`learnings/pending/`** — new discoveries and plan deviations, each in its own file, awaiting evaluation.
-- **`learnings/archive/`** — evaluated learning records, moved here once processed.
-- **`TECH_DEBT.md`** — intentional shortcuts that should be revisited later.
-- **`REVIEWER_FINDINGS.md`** — an audit log of regressions and rule violations.
-- **`PROMPTS.md`** — reusable prompts and scripts for running sessions.
-
-## The working process (user-in-the-loop)
-
-This is **not** a fully autonomous system. Every handoff between the two skills pauses for your explicit **yes/no**.
-
-1. **Start with the evolver.** Prompt the AI (with the evolver skill loaded) with what you want to build, and specify your **interviewing verbosity level** (Extreme / Moderate / Low).
-2. **The evolver interviews you**, then produces the planning artifacts — `SPECS.md` (and adapts `AGENTS.md` as needed).
-3. **User-approved handoff.** The evolver presents `SPECS.md` and waits for your explicit **yes**. On yes, it hands off to the implementation skill.
-4. **The implementer takes over.** It first reads `REVIEWER_FINDINGS.md` and addresses any pending findings, then reads the active `SPECS.md` and completes it — verifying each unit, checking off items, and recording anything it learned or did differently.
-5. **Learnings communicate back.** The implementer writes learning files to `learnings/pending/` (with Evolution Candidates) so the evolver knows what to fold into guidance next round.
-6. **User-approved handoff back.** The implementer presents its results and waits for your explicit **yes**. On yes, it hands off back to the evolver.
-7. **The loop repeats.** The evolver drains `learnings/pending/`, promotes durable knowledge into guidance, and plans the next round.
-
-```
-evolver ──(plan, verbosity, approve SPECS)──▶ implementation ──(implement, verify, approve)──▶ evolver ──▶ ...
+# Custom database path and request delay
+uv run python -m scraper --db data/olx.db --delay 3
 ```
 
-Both skills require **read/write access** to the repository — the evolver to plan and evolve guidance, the implementer to build and record learnings.
+### CLI flags
 
-## Token efficiency: learnings are a queue, not an archive
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--cities` | `islamabad rawalpindi` | Cities to scrape (keys in `scraper/config.py`) |
+| `--hours` | `24` | Look-back window in hours |
+| `--export` | *(none)* | Export formats: `csv`, `json`, or both |
+| `--db` | `data/olx.db` | Path to the SQLite database |
+| `--delay` | `2.0` | Delay in seconds between requests |
 
-Learnings are **not** one ever-growing file that every session must read. Instead:
+## Output
 
-- New learnings land in `learnings/pending/` as **individual files**.
-- The evolver reads **only** `learnings/pending/` — the directory listing *is* the list of what's new, so token cost stays proportional to new findings, not the total history.
-- After evaluation, the evolver moves each learning to `learnings/archive/`.
-- Implementation does **not** read the archive; it reads the distilled guidance (skills / `AGENTS.md` / `TECH_DEBT.md`) that the evolver keeps current.
+- **SQLite database** at `data/olx.db` (default) — the source of truth.
+- **Exports** written to `data/listings.csv` and/or `data/listings.json`.
 
-## Getting started
+Each listing stores: `item_id`, `title`, `price`, `price_numeric`, `currency`, `location`, `city`, `relative_time`, `posted_at`, `description`, `image_urls`, `item_url`, `is_featured`, `scraped_at`.
 
-1. Copy this harness into your project.
-2. Fill in the project details at the top of [`AGENTS.md`](AGENTS.md) (tech stack, build command, test command).
-3. Start an evolver session: tell it what you want to build and set your interviewing verbosity.
-4. Approve the produced `SPECS.md` to hand off to implementation.
-5. Approve the implementation results to hand back to the evolver, and repeat.
+## Tests
 
-## Notes
+```bash
+uv run --extra dev pytest
+```
 
-- This is a starting point, not a finished product. Expect to adjust the rules as you use them.
-- The domain skill files (frontend, backend, database, testing) are **examples only** — the evolver can create any skill it deems necessary.
+## Project structure
+
+```
+scraper/
+  config.py     Central configuration (cities, time window, delay, URLs)
+  storage.py    SQLite schema, upsert logic, CSV/JSON export
+  fetcher.py    Polite HTTP client (User-Agent, delay, retry/backoff)
+  parsers.py    HTML parsing, price normalization, relative-time parsing
+  runner.py     Orchestrates fetch → filter → enrich → upsert → export
+  cli.py        Command-line entry point
+tests/          Unit + integration tests
+SPECS.md        Active specification (all units complete)
+```
+
+## Roadmap (future work)
+
+- Deploy to a home server (Ubuntu mini PC).
+- Automated scheduling (cron/systemd) for daily or twice-daily runs.
+- A "flag lucrative deals" analysis system (no ML).
