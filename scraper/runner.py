@@ -1,0 +1,115 @@
+"""Orchestration for a single scrape run.
+
+The runner ties together the fetcher, parsers, and storage:
+
+1. For each configured city, fetch the laptops search page.
+2. Parse the listing cards and keep only those within the time window.
+3. For each kept listing, fetch its item page and enrich it with the
+   description and image URLs (text only).
+4. Upsert every listing into SQLite.
+5. Optionally export to CSV and/or JSON.
+"""
+
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+
+from scraper import config
+from scraper.fetcher import Fetcher, FetchError
+from scraper.parsers import is_within_hours, parse_item_detail, parse_search_results
+from scraper.storage import (
+    connect,
+    export_csv,
+    export_json,
+    fetch_all,
+    upsert_listing,
+)
+
+
+def build_search_url(city_slug: str) -> str:
+    """Build the OLX search URL for a city's laptops category."""
+    return (
+        f"{config.BASE_URL}/{city_slug}/"
+        f"{config.LAPTOPS_CATEGORY_PATH}/{config.SEARCH_QUERY}"
+    )
+
+
+class RunSummary:
+    """Result counters for a scrape run."""
+
+    def __init__(self) -> None:
+        self.fetched = 0
+        self.new = 0
+        self.updated = 0
+        self.skipped = 0
+        self.errors = 0
+
+    def __repr__(self) -> str:
+        return (
+            f"Fetched {self.fetched} listings, "
+            f"{self.new} new, {self.updated} updated, "
+            f"{self.skipped} skipped, {self.errors} errors"
+        )
+
+
+def run(
+    cities: Optional[Dict[str, str]] = None,
+    hours: int = config.DEFAULT_HOURS,
+    db_path: str = config.DEFAULT_DB_PATH,
+    export: Optional[List[str]] = None,
+    export_dir: str = config.DEFAULT_EXPORT_DIR,
+    delay: float = config.DEFAULT_DELAY,
+    fetcher: Optional[Fetcher] = None,
+) -> RunSummary:
+    """Execute a full scrape run and return a summary."""
+    cities = cities or config.DEFAULT_CITIES
+    export = export or []
+    fetcher = fetcher or Fetcher(delay=delay)
+    summary = RunSummary()
+
+    conn = connect(db_path)
+
+    try:
+        for city, city_slug in cities.items():
+            url = build_search_url(city_slug)
+            try:
+                html = fetcher.get(url)
+            except FetchError as exc:
+                print(f"[{city}] search fetch failed: {exc}")
+                summary.errors += 1
+                continue
+
+            listings = parse_search_results(html, city)
+            kept = [l for l in listings if is_within_hours(l["relative_time"], hours)]
+            summary.fetched += len(kept)
+            summary.skipped += len(listings) - len(kept)
+
+            for listing in kept:
+                try:
+                    detail_html = fetcher.get(listing["item_url"])
+                    listing = parse_item_detail(detail_html, listing)
+                except FetchError as exc:
+                    print(f"[{city}] item {listing['item_id']} fetch failed: {exc}")
+                    summary.errors += 1
+                    # Still store the partial listing (title/price/location).
+                finally:
+                    fetcher.sleep_between()
+
+                is_new = upsert_listing(conn, listing)
+                if is_new:
+                    summary.new += 1
+                else:
+                    summary.updated += 1
+
+        if "csv" in export:
+            path = f"{export_dir}/listings.csv"
+            export_csv(fetch_all(conn), path)
+            print(f"Exported CSV -> {path}")
+        if "json" in export:
+            path = f"{export_dir}/listings.json"
+            export_json(fetch_all(conn), path)
+            print(f"Exported JSON -> {path}")
+    finally:
+        conn.close()
+
+    return summary
