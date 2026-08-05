@@ -136,6 +136,19 @@ def _row_to_listing(row: sqlite3.Row) -> Dict[str, Any]:
     return listing
 
 
+def listing_exists(conn: sqlite3.Connection, item_id: str) -> bool:
+    """Return True if a listing with the given item_id is already stored.
+
+    Used by the runner's pagination early-stop: since OLX orders search results
+    newest-first, once we encounter an already-stored listing, everything older
+    on later pages is already known and we can stop paging.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM listings WHERE item_id = ?", (item_id,)
+    ).fetchone()
+    return row is not None
+
+
 def fetch_all(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Return all stored listings as dicts."""
     rows = conn.execute(f"SELECT {', '.join(LISTING_COLUMNS)} FROM listings").fetchall()

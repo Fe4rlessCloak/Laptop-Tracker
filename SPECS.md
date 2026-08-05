@@ -56,3 +56,59 @@
 - Preserve existing public APIs unless specified.
 - Preserve backward compatibility unless explicitly waived.
 - The scraper must remain polite to OLX: configurable delay between requests, no aggressive parallelism, no image downloads.
+
+---
+
+# Spec: OLX Pagination & Fresh-Listing Capture (Evolution)
+
+## 1. Objective & Scope
+* **Goal:** Extend the OLX laptop scraper to page through all search-result pages per city so it captures every listing within the configured recent time window (default 12–24h), instead of only the first page (~50 ads). OLX pushes older ads to the top even when sorted by newest, so the existing time-window filter (which reads each card's posted time from the search page, without visiting item links) is the primary gate that keeps the database clean of stale ads. Duplicate prevention is already handled by the `item_id` PRIMARY KEY + upsert; this spec adds an early-stop-on-duplicate optimization to pagination.
+* **Target Files/Directories:** `scraper/runner.py`, `scraper/storage.py`, `scraper/config.py`, `scraper/cli.py`, `tests/test_runner.py`, `tests/test_storage.py`
+* **Out of Scope:**
+  - Filtering by the "Featured" badge — confirmed NOT needed. The time-window filter already drops old ads pushed to the top; any ad within the window is kept regardless of featured status.
+  - Headless browser / infinite-scroll simulation — OLX exposes `?page=N`, so plain-HTTP pagination suffices.
+  - Changing the storage schema or upsert semantics — duplicate prevention already works.
+
+## 2. Dependencies & Prerequisites
+- [x] Existing MVP scraper (all prior units complete and checked off)
+- [x] Confirmed OLX supports `?page=N` pagination for the laptops category (developer-verified)
+- [x] Real-world depth data: Rawalpindi 24h ads ≈ 5 pages; Islamabad 24h ads ≈ 11 pages
+
+## 3. Implementation Units (Execution Order)
+*Implement in logical order of foundational dependencies first, regardless of list position.*
+
+- [x] **Unit 1: Storage helper for duplicate detection**
+  - [x] Add `listing_exists(conn, item_id) -> bool` to `scraper/storage.py` (a simple `SELECT 1 FROM listings WHERE item_id = ?` wrapper) to support the pagination early-stop
+  - [x] Add unit test in `tests/test_storage.py` verifying it returns True for a stored ID and False for an unknown one
+
+- [x] **Unit 2: Pagination-aware search URL**
+  - [x] Update `build_search_url` in `scraper/runner.py` (or add a helper) to accept a page number and append `?page=N` to the existing search URL
+  - [x] Add `MAX_PAGES = 20` to `scraper/config.py` as a safety cap against runaway loops
+
+- [x] **Unit 3: Pagination loop in the runner**
+  - [x] Refactor the per-city loop in `scraper/runner.py` to iterate pages 1..MAX_PAGES, stopping early when either:
+    - (a) a page contains no listings within the time window (time-window exhaustion), or
+    - (b) a listing already exists in the DB (duplicate early-stop) — keep any new listings earlier on that page, then stop at the first already-known one
+  - [x] Check the time-window filter BEFORE the duplicate check for each listing
+  - [x] Keep the existing behavior: within-window, non-duplicate listings get their item page fetched for description/image enrichment, then upserted
+  - [x] Add/update integration tests in `tests/test_runner.py` (mocked HTTP) covering: multi-page capture, early-stop on duplicate, and early-stop on time-window exhaustion
+
+- [x] **Unit 4: CLI (optional surface)**
+  - [x] Confirm no new CLI flag is needed (early-stop is always on; no `--no-early-stop`). Update `scraper/cli.py` help text only if the summary wording changes.
+
+## 4. Verification Criteria
+*Task is complete only when verified by an observable signal.*
+
+* **Build Command:** `uv sync`
+* **Test Command:** `uv run --extra dev pytest`
+* **Expected Observable Behavior:**
+  - `uv run python -m scraper --cities islamabad rawalpindi --hours 24` pages through multiple search pages per city and prints a summary
+  - On a first run (empty DB), all listings within the window are captured across pages (no reliance on duplicate-stop)
+  - On a repeat run, the runner stops paging as soon as it hits the first already-stored listing, and no duplicate rows are created
+  - Old ads pushed to the top (e.g., 7 days old) are dropped by the time-window filter without visiting their item pages
+  - All unit/integration tests pass
+
+## 5. Compatibility
+- Preserve existing public APIs unless specified.
+- Preserve backward compatibility unless explicitly waived.
+- The scraper must remain polite to OLX: configurable delay between requests, no aggressive parallelism, no image downloads.

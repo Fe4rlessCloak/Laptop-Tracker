@@ -15,6 +15,12 @@ LAPTOPS_CATEGORY_PATH = "laptops-computers-accessories_c443"
 # Search query appended to the category path.
 SEARCH_QUERY = "q-laptops"
 
+# Sort parameter to request newest-first ordering. OLX's default sort surfaces
+# old featured/relevance ads at the top; `sorting=desc-creation` orders normal
+# (non-featured) ads by newest first. Featured ads may still be pushed to the
+# top and break the ordering, so the time-window filter remains the primary gate.
+SORT_PARAM = "sorting=desc-creation"
+
 # City slugs as used in OLX URLs, e.g.:
 #   https://www.olx.com.pk/islamabad_g4060615/laptops-computers-accessories_c443/q-laptops
 # The `_g<id>` suffix is the geographic region ID.
@@ -25,6 +31,12 @@ DEFAULT_CITIES = {
 
 # Default time window (in hours) to look back when filtering listings.
 DEFAULT_HOURS = 24
+
+# Safety cap on the number of search pages fetched per city. The pagination
+# loop normally stops earlier (time-window exhaustion or first duplicate), but
+# this guarantees termination even if OLX behaves unexpectedly. At ~50 ads/page
+# this covers ~1000 ads, far more than a 24h window needs.
+MAX_PAGES = 20
 
 # Default delay (seconds) between HTTP requests to stay polite to the site.
 DEFAULT_DELAY = 2.0

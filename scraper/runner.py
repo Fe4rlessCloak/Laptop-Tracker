@@ -26,12 +26,18 @@ from scraper.storage import (
 )
 
 
-def build_search_url(city_slug: str) -> str:
-    """Build the OLX search URL for a city's laptops category."""
-    return (
+def build_search_url(city_slug: str, page: int = 1) -> str:
+    """Build the OLX search URL for a city's laptops category.
+
+    ``page`` selects the pagination page (1-based); OLX exposes more results
+    via a ``?page=N`` query parameter. The URL also requests newest-first
+    ordering (``sorting=desc-creation``) so fresh listings appear first.
+    """
+    base = (
         f"{config.BASE_URL}/{city_slug}/"
         f"{config.LAPTOPS_CATEGORY_PATH}/{config.SEARCH_QUERY}"
     )
+    return f"{base}?page={page}&{config.SORT_PARAM}"
 
 
 class RunSummary:
@@ -71,35 +77,51 @@ def run(
 
     try:
         for city, city_slug in cities.items():
-            url = build_search_url(city_slug)
-            try:
-                html = fetcher.get(url)
-            except FetchError as exc:
-                print(f"[{city}] search fetch failed: {exc}")
-                summary.errors += 1
-                continue
-
-            listings = parse_search_results(html, city)
-            kept = [l for l in listings if is_within_hours(l["relative_time"], hours)]
-            summary.fetched += len(kept)
-            summary.skipped += len(listings) - len(kept)
-
-            for listing in kept:
+            # Page through search results until the time window is exhausted
+            # (a page with no fresh listings) or the MAX_PAGES cap is reached.
+            # NOTE: we deliberately do NOT early-stop on a duplicate listing.
+            # OLX pushes featured ads to the top out of chronological order,
+            # so a duplicate on an early page does not guarantee that newer
+            # ads are absent from later pages — stopping early would miss them.
+            for page in range(1, config.MAX_PAGES + 1):
+                url = build_search_url(city_slug, page)
                 try:
-                    detail_html = fetcher.get(listing["item_url"])
-                    listing = parse_item_detail(detail_html, listing)
+                    html = fetcher.get(url)
                 except FetchError as exc:
-                    print(f"[{city}] item {listing['item_id']} fetch failed: {exc}")
+                    print(f"[{city}] search fetch failed: {exc}")
                     summary.errors += 1
-                    # Still store the partial listing (title/price/location).
-                finally:
-                    fetcher.sleep_between()
+                    break
 
-                is_new = upsert_listing(conn, listing)
-                if is_new:
-                    summary.new += 1
-                else:
-                    summary.updated += 1
+                listings = parse_search_results(html, city)
+                kept = [
+                    l for l in listings
+                    if is_within_hours(l["relative_time"], hours)
+                ]
+                summary.fetched += len(kept)
+                summary.skipped += len(listings) - len(kept)
+
+                if not kept:
+                    # Time-window exhausted: no fresh listings on this page.
+                    break
+
+                for listing in kept:
+                    try:
+                        detail_html = fetcher.get(listing["item_url"])
+                        listing = parse_item_detail(detail_html, listing)
+                    except FetchError as exc:
+                        print(
+                            f"[{city}] item {listing['item_id']} fetch failed: {exc}"
+                        )
+                        summary.errors += 1
+                        # Still store the partial listing (title/price/location).
+                    finally:
+                        fetcher.sleep_between()
+
+                    is_new = upsert_listing(conn, listing)
+                    if is_new:
+                        summary.new += 1
+                    else:
+                        summary.updated += 1
 
         if "csv" in export:
             path = f"{export_dir}/listings.csv"

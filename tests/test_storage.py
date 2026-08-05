@@ -12,6 +12,7 @@ from scraper.storage import (
     export_csv,
     export_json,
     fetch_all,
+    listing_exists,
     upsert_listing,
 )
 
@@ -63,6 +64,13 @@ def test_upsert_updates_existing(db):
 
     rows = fetch_all(db)
     assert rows[0]["title"] == "Updated title"
+
+
+def test_listing_exists(db):
+    assert listing_exists(db, SAMPLE["item_id"]) is False
+    upsert_listing(db, SAMPLE)
+    assert listing_exists(db, SAMPLE["item_id"]) is True
+    assert listing_exists(db, "999999999") is False
 
 
 def test_fetch_all_parses_image_urls(db):

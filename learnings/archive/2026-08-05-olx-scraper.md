@@ -87,7 +87,7 @@ def _find_description(soup):
 
 - **Destination:** `SKILL`
 - **Priority:** Medium
-- **Status:** PENDING
+- **Status:** ACCEPTED
 - **Suggested Target:** a new domain skill, e.g. `.agents/skills/olx-scraping.md`
 
 #### Suggestion
@@ -108,7 +108,7 @@ each time.
 
 - **Destination:** `AGENTS`
 - **Priority:** Low
-- **Status:** PENDING
+- **Status:** ACCEPTED
 - **Suggested Target:** `AGENTS.md` §1 Project Snapshot
 
 #### Suggestion

@@ -3,8 +3,9 @@
 
 ## 1. Project Snapshot
 * **Tech Stack:** Python 3.10+; `requests` + `beautifulsoup4` for scraping; `sqlite3` (stdlib) for storage; CSV/JSON export via stdlib
-* **Build Command:** `pip install -r requirements.txt`
-* **Test Command:** `python -m pytest`
+* **Build Command:** `uv sync`
+* **Test Command:** `uv run --extra dev pytest`
+* **Run Command:** `uv run python -m scraper`
 * **Lint/Format Command:** `python -m flake8` (optional; not yet configured)
 
 ---
@@ -60,6 +61,7 @@ The following are examples; the evolver can create any skill it deems necessary.
 * **Backend & API Routes:** `.agents/skills/backend.md` [Populate path when created]
 * **Database & Migrations:** `.agents/skills/database.md` [Populate path when created]
 * **Testing & Verification:** `.agents/skills/testing.md` [Populate path when created]
+* **OLX Pakistan Scraping:** `.agents/skills/olx-scraping.md` — site HTML structure, URL scheme, pagination, price/time parsing
 
 If a skill file is missing, continue using AGENTS.md alone and report the missing skill.
 
