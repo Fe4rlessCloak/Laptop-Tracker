@@ -62,7 +62,7 @@
 # Spec: OLX Pagination & Fresh-Listing Capture (Evolution)
 
 ## 1. Objective & Scope
-* **Goal:** Extend the OLX laptop scraper to page through all search-result pages per city so it captures every listing within the configured recent time window (default 12–24h), instead of only the first page (~50 ads). OLX pushes older ads to the top even when sorted by newest, so the existing time-window filter (which reads each card's posted time from the search page, without visiting item links) is the primary gate that keeps the database clean of stale ads. Duplicate prevention is already handled by the `item_id` PRIMARY KEY + upsert; this spec adds an early-stop-on-duplicate optimization to pagination.
+* **Goal:** Extend the OLX laptop scraper to page through all search-result pages per city so it captures every listing within the configured recent time window (default 12–24h), instead of only the first page (~50 ads). OLX pushes older ads to the top even when sorted by newest, so the existing time-window filter (which reads each card's posted time from the search page, without visiting item links) is the primary gate that keeps the database clean of stale ads. Duplicate prevention is already handled by the `item_id` PRIMARY KEY + upsert. Note: an early-stop-on-duplicate optimization was considered but **removed** — featured ads break OLX's newest-first ordering, so the runner stops only on time-window exhaustion or the `MAX_PAGES` cap.
 * **Target Files/Directories:** `scraper/runner.py`, `scraper/storage.py`, `scraper/config.py`, `scraper/cli.py`, `tests/test_runner.py`, `tests/test_storage.py`
 * **Out of Scope:**
   - Filtering by the "Featured" badge — confirmed NOT needed. The time-window filter already drops old ads pushed to the top; any ad within the window is kept regardless of featured status.
@@ -78,23 +78,22 @@
 *Implement in logical order of foundational dependencies first, regardless of list position.*
 
 - [x] **Unit 1: Storage helper for duplicate detection**
-  - [x] Add `listing_exists(conn, item_id) -> bool` to `scraper/storage.py` (a simple `SELECT 1 FROM listings WHERE item_id = ?` wrapper) to support the pagination early-stop
+  - [x] Add `listing_exists(conn, item_id) -> bool` to `scraper/storage.py` (a simple `SELECT 1 FROM listings WHERE item_id = ?` wrapper). Note: this helper was originally added to support a duplicate early-stop that was later **removed**; it remains available for other callers but is not used to stop pagination.
   - [x] Add unit test in `tests/test_storage.py` verifying it returns True for a stored ID and False for an unknown one
 
 - [x] **Unit 2: Pagination-aware search URL**
   - [x] Update `build_search_url` in `scraper/runner.py` (or add a helper) to accept a page number and append `?page=N` to the existing search URL
+  - [x] Append `sorting=desc-creation` to the search URL so OLX returns newest-first ordering (without it, the default sort surfaces only old featured/relevance ads and the scraper captures nothing within the window)
   - [x] Add `MAX_PAGES = 20` to `scraper/config.py` as a safety cap against runaway loops
 
 - [x] **Unit 3: Pagination loop in the runner**
-  - [x] Refactor the per-city loop in `scraper/runner.py` to iterate pages 1..MAX_PAGES, stopping early when either:
-    - (a) a page contains no listings within the time window (time-window exhaustion), or
-    - (b) a listing already exists in the DB (duplicate early-stop) — keep any new listings earlier on that page, then stop at the first already-known one
-  - [x] Check the time-window filter BEFORE the duplicate check for each listing
-  - [x] Keep the existing behavior: within-window, non-duplicate listings get their item page fetched for description/image enrichment, then upserted
-  - [x] Add/update integration tests in `tests/test_runner.py` (mocked HTTP) covering: multi-page capture, early-stop on duplicate, and early-stop on time-window exhaustion
+  - [x] Refactor the per-city loop in `scraper/runner.py` to iterate pages 1..MAX_PAGES, stopping when a page contains no listings within the time window (time-window exhaustion) or when `MAX_PAGES` is reached
+  - [x] Do **NOT** early-stop on a duplicate listing — featured ads break OLX's newest-first ordering, so a duplicate on an early page does not guarantee newer ads are absent from later pages
+  - [x] Keep the existing behavior: within-window listings get their item page fetched for description/image enrichment, then upserted (repeat runs update already-stored listings)
+  - [x] Add/update integration tests in `tests/test_runner.py` (mocked HTTP) covering: multi-page capture, no early-stop on duplicate, and early-stop on time-window exhaustion
 
 - [x] **Unit 4: CLI (optional surface)**
-  - [x] Confirm no new CLI flag is needed (early-stop is always on; no `--no-early-stop`). Update `scraper/cli.py` help text only if the summary wording changes.
+  - [x] Confirm no new CLI flag is needed (there is no duplicate early-stop to toggle, so no `--no-early-stop`). Update `scraper/cli.py` help text only if the summary wording changes.
 
 ## 4. Verification Criteria
 *Task is complete only when verified by an observable signal.*
@@ -103,8 +102,8 @@
 * **Test Command:** `uv run --extra dev pytest`
 * **Expected Observable Behavior:**
   - `uv run python -m scraper --cities islamabad rawalpindi --hours 24` pages through multiple search pages per city and prints a summary
-  - On a first run (empty DB), all listings within the window are captured across pages (no reliance on duplicate-stop)
-  - On a repeat run, the runner stops paging as soon as it hits the first already-stored listing, and no duplicate rows are created
+  - On a first run (empty DB), all listings within the window are captured across pages
+  - On a repeat run, the runner does not early-stop on a duplicate; it re-fetches and updates already-stored listings (upsert), and no duplicate rows are created
   - Old ads pushed to the top (e.g., 7 days old) are dropped by the time-window filter without visiting their item pages
   - All unit/integration tests pass
 
@@ -112,3 +111,53 @@
 - Preserve existing public APIs unless specified.
 - Preserve backward compatibility unless explicitly waived.
 - The scraper must remain polite to OLX: configurable delay between requests, no aggressive parallelism, no image downloads.
+
+---
+
+# Spec: GitHub Issue Intake for the Public Evolution Bot (Evolution)
+
+## 1. Objective & Scope
+* **Goal:** Add GitHub Issue intake to the public Evolution Bot's process so that each Evolution session inspects the repository's open GitHub Issues as an external input channel, classifies them by source label, and routes them through the normal Evolution workflow (`review → accepted → implementation → verified → implemented/closed`). This is a **guidance/process change only** — no application code, API clients, GitHub tokens, or database tracking.
+* **Target Files/Directories:** `.agents/skills/repository-evolution/SKILL.md`, `AGENTS.md` (§4.1 Skill Routing), `SPECS.md`
+* **Out of Scope:**
+  - No GitHub Issues API client, token, or intake module in the scraper codebase.
+  - No database tracking of Issues.
+  - No access to the proprietary repository. A `source:proprietary` Issue is treated as a **public** Issue containing only sanitized technical requirements; do not request or search for proprietary context, and do not assume why the proprietary application needs the capability.
+
+## 2. Dependencies & Prerequisites
+- [x] Existing repository-evolution skill (`.agents/skills/repository-evolution/SKILL.md`)
+- [x] `AGENTS.md` §4.1 Skill Routing table
+
+## 3. Implementation Units (Execution Order)
+*Implement in logical order of foundational dependencies first, regardless of list position.*
+
+- [x] **Unit 1: GitHub Issue intake step in the Evolution skill**
+  - [x] Add a "GitHub Issue Intake" lifecycle step to `.agents/skills/repository-evolution/SKILL.md` so every Evolution session checks relevant open Issues
+  - [x] Add a "GitHub Issue Intake" section documenting: source labels (`source:proprietary` / `source:human` / `source:community` / `source:automated`), the intake→classify→decide flow, and the Issue lifecycle (`status:review` → `status:accepted` → `status:implemented`/close)
+  - [x] Document that the Evolution Bot uses its **existing GitHub/MCP capabilities** to read and update Issues — no new API clients or tokens
+  - [x] Document the `source:proprietary` boundary (treat as public Issue; no proprietary access)
+
+- [x] **Unit 2: AGENTS.md pointer**
+  - [x] Add a pointer in `AGENTS.md` §4.1 (Skill Routing) noting that the Evolution skill includes GitHub Issue intake
+
+- [x] **Unit 3: Verification**
+  - [x] Confirm the Evolution skill and `AGENTS.md` are internally consistent and reference live paths
+  - [x] Confirm no application code was added to `scraper/`
+
+## 4. Verification Criteria
+*Task is complete only when verified by an observable signal.*
+
+* **Build Command:** `uv sync`
+* **Test Command:** `uv run --extra dev pytest`
+* **Expected Observable Behavior:**
+  - `.agents/skills/repository-evolution/SKILL.md` contains a GitHub Issue intake lifecycle step and section
+  - `AGENTS.md` §4.1 references GitHub Issue intake in the Evolution skill
+  - The Issue lifecycle (`review → accepted → implementation → verified → implemented/closed`) and the "Issue accepted ≠ Issue implemented" distinction are documented
+  - No new files under `scraper/` and no GitHub API/token code added
+  - Existing tests still pass (`uv run --extra dev pytest`)
+
+## 5. Compatibility
+- Preserve existing public APIs unless specified.
+- Preserve backward compatibility unless explicitly waived.
+- GitHub Issues are an **input channel** to the Evolution process, not automatic instructions; the Evolution Bot does not implement every Issue.
+- The public wing has no dependency on the proprietary repository (dependency direction remains Proprietary → Public).

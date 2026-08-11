@@ -21,13 +21,14 @@ Follow this ordered sequence every session. Do not skip steps.
 
 1. Review the current repository guidance (`AGENTS.md`, skills, templates).
 2. Review `learnings/pending/` and `REVIEWER_FINDINGS.md`.
-3. **Ask the developer for the interviewing verbosity level** (Extreme / Moderate / Low).
-4. Interview the developer to resolve planning or architectural uncertainty, at the chosen verbosity.
-5. Produce or update planning artifacts (`SPECS.md`).
-6. Promote reusable knowledge into repository guidance; drain `learnings/pending/`.
-7. Verify the repository's instruction system remains consistent.
-8. Present `SPECS.md` and **wait for the developer's explicit yes/no**.
-9. On **yes**, hand off to the implementation skill (see Handoff to Implementation).
+3. **Perform GitHub Issue intake** — inspect the repository's open GitHub Issues as an external input channel (see GitHub Issue Intake below).
+4. **Ask the developer for the interviewing verbosity level** (Extreme / Moderate / Low).
+5. Interview the developer to resolve planning or architectural uncertainty, at the chosen verbosity.
+6. Produce or update planning artifacts (`SPECS.md`).
+7. Promote reusable knowledge into repository guidance; drain `learnings/pending/`.
+8. Verify the repository's instruction system remains consistent.
+9. Present `SPECS.md` and **wait for the developer's explicit yes/no**.
+10. On **yes**, hand off to the implementation skill (see Handoff to Implementation).
 
 ---
 
@@ -40,10 +41,56 @@ Review these documents before making planning decisions:
 - Domain skills
 - `learnings/pending/` (the learning queue — read only this directory, not the archive)
 - `REVIEWER_FINDINGS.md`
+- Open GitHub Issues (see GitHub Issue Intake below)
 
 If a required operational document does not exist, create it using the corresponding template from `.agents/templates/`.
 
 Never invent the structure of repository documents.
+
+---
+
+## GitHub Issue Intake
+
+GitHub Issues are an **external input channel** for the Evolution Bot. They are requests entering the Evolution system — **not** automatic instructions, and **not** tasks considered complete merely because they were read. Do not assume every Issue should be implemented.
+
+Use the repository's available GitHub/MCP capabilities to inspect open Issues. Do **not** add API clients, GitHub tokens, database tracking, or other application code solely for this functionality.
+
+### Source labels
+
+Use GitHub labels to distinguish request origins:
+
+- `source:proprietary` — request originated from the proprietary wing.
+- `source:human` — request originated from the repository owner/user.
+- `source:community` — request originated from an external contributor or user.
+- `source:automated` — request originated from an automated process.
+
+A request may carry additional status/priority labels (e.g. `status:review`, `status:accepted`).
+
+### `source:proprietary` boundary
+
+A `source:proprietary` Issue is a **public** Issue containing only sanitized technical requirements. Treat it as a request for a generic public capability:
+
+- Do not attempt to access the proprietary repository.
+- Do not request or search for proprietary context.
+- Do not assume why the proprietary application needs the capability.
+- Evaluate it by the same architectural standards as any other public request.
+
+The public wing has no dependency on the proprietary repository; the dependency direction remains **Proprietary → Public**.
+
+### Issue lifecycle
+
+Process each relevant open Issue through the normal Evolution workflow:
+
+```text
+review → accepted → implementation → verified → implemented/closed
+```
+
+1. **Intake.** Read each relevant open Issue: understand the request, identify its source, determine relevance, and decide whether it should be accepted, rejected, or needs clarification. Newly discovered Issues should normally receive `status:review`.
+2. **Accepted.** If a request is accepted, do **not** mark it implemented or close it yet. Translate it into the appropriate entry in `SPECS.md`, ensure the spec is actionable for the Implementation skill, mark the Issue `status:accepted`, and leave it open.
+3. **Implementation.** The Implementation skill works from `SPECS.md` and should **not** independently close the originating GitHub Issue unless explicitly instructed to do so.
+4. **Later Evolution cycle.** On a subsequent cycle, compare accepted Issues against the current repository state and `SPECS.md`. Only after the functionality is actually implemented and verified should the Evolution Bot apply `status:implemented` and close the Issue. If implementation is blocked or incomplete, leave the Issue open and retain the appropriate status/context.
+
+**Important distinction:** Issue accepted ≠ Issue implemented. GitHub Issues act as persistent requests/tasks entering the Evolution system, while `SPECS.md` acts as the internal specification consumed by the Implementation skill.
 
 ---
 

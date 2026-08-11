@@ -120,7 +120,7 @@ def build_search_url(city_slug: str, page: int = 1) -> str:
 
 - **Destination:** `SKILL`
 - **Priority:** Medium
-- **Status:** PENDING
+- **Status:** ACCEPTED
 - **Suggested Target:** `.agents/skills/olx-scraping.md`
 
 #### Suggestion
@@ -140,7 +140,7 @@ Documenting the pitfall prevents regression.
 
 - **Destination:** `SPECS`
 - **Priority:** High
-- **Status:** PENDING
+- **Status:** ACCEPTED
 - **Suggested Target:** `SPECS.md` (OLX Pagination & Fresh-Listing Capture, Unit 2)
 
 #### Suggestion
@@ -160,7 +160,7 @@ for correctness. Without reconciling the spec, a future session could repeat the
 
 - **Destination:** `SKILL`
 - **Priority:** High
-- **Status:** PENDING
+- **Status:** ACCEPTED
 - **Suggested Target:** `.agents/skills/olx-scraping.md`
 
 #### Suggestion
@@ -179,7 +179,7 @@ work to repeat the "0 fetched" failure.
 
 - **Destination:** `SPECS`
 - **Priority:** High
-- **Status:** PENDING
+- **Status:** ACCEPTED
 - **Suggested Target:** `SPECS.md` (OLX Pagination & Fresh-Listing Capture, Unit 3)
 
 #### Suggestion

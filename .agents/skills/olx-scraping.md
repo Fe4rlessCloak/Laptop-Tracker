@@ -31,6 +31,9 @@ other categories) does not re-discover them.
   `islamabad_g4060615`, `rawalpindi_g4060681`
 - Full search URL:
   `https://www.olx.com.pk/{city}_{gid}/{category}_{cid}/q-{query}`
+- **Sorting:** append `sorting=desc-creation` to request newest-first ordering.
+  OLX's default sort surfaces old featured/relevance ads at the top, so without
+  this parameter the scraper captures nothing within the window.
 - **Pagination:** append `?page=N` (e.g. `?page=2`). OLX updates `?page=N` as
   you scroll. Real-world depth for a 24h window: Rawalpindi ≈ 5 pages,
   Islamabad ≈ 11 pages.
@@ -69,22 +72,30 @@ other categories) does not re-discover them.
   HTTP.
 - Do not fetch item pages just to determine an ad's age; the search card
   already carries the relative time.
-- Do not add a `--no-early-stop` flag; early-stop on duplicate is always on.
+- Do **not** early-stop on a duplicate listing. Featured ads break OLX's
+  newest-first ordering, so a duplicate on an early page does not guarantee
+  newer ads are absent from later pages. Rely on time-window exhaustion and
+  `MAX_PAGES` instead.
+- Do not add a `--no-early-stop` flag; there is no duplicate early-stop to
+  disable.
 
 ---
 
 ## Blueprint
 
 ```python
-# scraper/runner.py — pagination with early-stop
+# scraper/config.py
+SORT_PARAM = "sorting=desc-creation"
+
+# scraper/runner.py — pagination (no duplicate early-stop)
 def build_search_url(city_slug: str, page: int) -> str:
     base = (
         f"{config.BASE_URL}/{city_slug}/"
         f"{config.LAPTOPS_CATEGORY_PATH}/{config.SEARCH_QUERY}"
     )
-    return f"{base}?page={page}"
+    return f"{base}?page={page}&{config.SORT_PARAM}"
 
-# Stop paging when a page has no fresh listings OR we hit an already-stored ID.
+# Stop paging only on time-window exhaustion or the MAX_PAGES cap.
 for page in range(1, config.MAX_PAGES + 1):
     html = fetcher.get(build_search_url(city_slug, page))
     listings = parse_search_results(html, city)
@@ -92,9 +103,7 @@ for page in range(1, config.MAX_PAGES + 1):
     if not fresh:
         break  # time-window exhausted
     for listing in fresh:
-        if storage.listing_exists(conn, listing["item_id"]):
-            return  # duplicate early-stop: everything older is already known
-        # ... fetch detail, upsert
+        # ... fetch detail, upsert (no listing_exists early-stop)
 ```
 
 ---
@@ -105,5 +114,6 @@ Before considering OLX scraping work complete:
 
 - [ ] Search-page fields (title, price, location, relative time) parse correctly.
 - [ ] Item-page description extracts from the inner span of `[aria-label="Description"]`.
-- [ ] Pagination captures multiple pages and stops on time-window exhaustion or duplicate.
+- [ ] Search URLs include `sorting=desc-creation` for newest-first ordering.
+- [ ] Pagination captures multiple pages and stops on time-window exhaustion or the `MAX_PAGES` cap (no duplicate early-stop).
 - [ ] Existing tests pass (`uv run --extra dev pytest`).

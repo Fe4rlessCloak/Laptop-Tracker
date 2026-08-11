@@ -49,7 +49,7 @@ Meta-skills govern the repository's instruction system itself. Load them based o
 | Session type | Skill to load |
 |---|---|
 | Implementing the active spec | `.agents/skills/implementation/SKILL.md` |
-| Evolving repository guidance / planning | `.agents/skills/repository-evolution/SKILL.md` |
+| Evolving repository guidance / planning | `.agents/skills/repository-evolution/SKILL.md` (includes GitHub Issue intake) |
 
 ### 4.2 Domain Skills
 
