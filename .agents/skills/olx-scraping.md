@@ -25,8 +25,13 @@ other categories) does not re-discover them.
 ## URL Scheme
 
 - Base: `https://www.olx.com.pk`
-- Category path uses a slug + category ID, e.g. laptops:
-  `laptops-computers-accessories_c443`
+- Category path uses a slug + category ID, e.g. the Laptops category:
+  `laptops_c708203`. **Use the dedicated Laptops category** (`laptops_c708203`),
+  not the broader "Computers & Accessories" category
+  (`laptops-computers-accessories_c443`); the broader category mixes laptops
+  with RAM, GPUs, SSDs, mice, chargers, tablets, and other accessories.
+  Verify by fetching the candidate category URL and inspecting the first page
+  of results before introducing keyword filters.
 - City path uses a slug + geographic region ID, e.g.:
   `islamabad_g4060615`, `rawalpindi_g4060681`
 - Full search URL:
@@ -86,12 +91,14 @@ other categories) does not re-discover them.
 ```python
 # scraper/config.py
 SORT_PARAM = "sorting=desc-creation"
+CATEGORIES = {"laptops": "laptops_c708203"}
 
 # scraper/runner.py — pagination (no duplicate early-stop)
-def build_search_url(city_slug: str, page: int) -> str:
+def build_search_url(city_slug: str, page: int, category: str = "laptops") -> str:
+    path = config.CATEGORIES[category]
     base = (
         f"{config.BASE_URL}/{city_slug}/"
-        f"{config.LAPTOPS_CATEGORY_PATH}/{config.SEARCH_QUERY}"
+        f"{path}/{config.SEARCH_QUERY}"
     )
     return f"{base}?page={page}&{config.SORT_PARAM}"
 

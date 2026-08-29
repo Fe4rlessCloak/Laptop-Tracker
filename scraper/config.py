@@ -7,13 +7,18 @@ hardcoding site-specific details in multiple places.
 # Base URL for OLX Pakistan.
 BASE_URL = "https://www.olx.com.pk"
 
-# Laptops category. The category slug + ID come from OLX's own URL scheme:
-#   https://www.olx.com.pk/laptops-computers-accessories_c443/q-laptops
-# The `_c443` suffix is the category ID for "Computers & Accessories".
-LAPTOPS_CATEGORY_PATH = "laptops-computers-accessories_c443"
+# OLX category paths, keyed by short slug. The category slug + ID come from
+# OLX's own URL scheme, e.g.:
+#   https://www.olx.com.pk/laptops_c708203/q-laptop
+# The `_c<id>` suffix is OLX's internal category ID. Using a dict (not a single
+# constant) makes the lookup extensible: a future scraper for a different
+# category only needs a new entry here, plus a new --category CLI value.
+CATEGORIES = {
+    "laptops": "laptops_c708203",
+}
 
 # Search query appended to the category path.
-SEARCH_QUERY = "q-laptops"
+SEARCH_QUERY = "q-laptop"
 
 # Sort parameter to request newest-first ordering. OLX's default sort surfaces
 # old featured/relevance ads at the top; `sorting=desc-creation` orders normal
@@ -22,7 +27,7 @@ SEARCH_QUERY = "q-laptops"
 SORT_PARAM = "sorting=desc-creation"
 
 # City slugs as used in OLX URLs, e.g.:
-#   https://www.olx.com.pk/islamabad_g4060615/laptops-computers-accessories_c443/q-laptops
+#   https://www.olx.com.pk/islamabad_g4060615/laptops_c708203/q-laptop
 # The `_g<id>` suffix is the geographic region ID.
 DEFAULT_CITIES = {
     "islamabad": "islamabad_g4060615",

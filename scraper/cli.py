@@ -51,6 +51,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=config.DEFAULT_DELAY,
         help=f"Delay in seconds between requests (default: {config.DEFAULT_DELAY}).",
     )
+    parser.add_argument(
+        "--category",
+        default="laptops",
+        choices=list(config.CATEGORIES.keys()),
+        help="OLX category to scrape (default: %(default)s). "
+        "Keys of scraper/config.py CATEGORIES.",
+    )
     return parser
 
 
@@ -75,6 +82,7 @@ def main(argv=None) -> int:
         db_path=args.db,
         export=args.export,
         delay=args.delay,
+        category=args.category,
     )
     print(summary)
     return 0

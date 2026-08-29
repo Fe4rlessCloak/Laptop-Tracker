@@ -7,8 +7,11 @@ capture, early-stop on duplicate, and early-stop on time-window exhaustion.
 
 import os
 
+import pytest
+
+from scraper import config
 from scraper.fetcher import Fetcher
-from scraper.runner import run
+from scraper.runner import build_search_url, run
 from scraper.storage import connect, count_listings, fetch_all
 
 # Page 1: one fresh listing (2h ago) + one old listing (3 weeks ago).
@@ -219,3 +222,32 @@ def test_run_early_stops_on_time_window_exhaustion(tmp_path):
     conn = connect(db_path)
     assert count_listings(conn) == 0
     conn.close()
+
+
+def test_build_search_url_uses_laptops_c708203():
+    """The search base must be the Laptops-only category (c708203), not the
+    broader Computers & Accessories (c443), so non-laptop items are excluded
+    at the source rather than after fetch."""
+    url = build_search_url("islamabad_g4060615", 1)
+
+    assert "laptops_c708203" in url
+    assert "page=1" in url
+    assert "sorting=desc-creation" in url
+    # Regression guard: the old broader category must not reappear.
+    assert "c443" not in url
+    assert "laptops-computers-accessories" not in url
+
+
+def test_build_search_url_unknown_category_raises():
+    with pytest.raises(KeyError):
+        build_search_url("islamabad_g4060615", 1, category="phones")
+
+
+def test_build_search_url_round_trips_every_documented_category():
+    """Every key in CATEGORIES must produce a valid URL (defense against
+    config drift — if a new category is added with a typo, this catches it)."""
+    for category in config.CATEGORIES:
+        url = build_search_url("islamabad_g4060615", 1, category=category)
+        assert config.CATEGORIES[category] in url
+        assert "page=1" in url
+        assert "sorting=desc-creation" in url

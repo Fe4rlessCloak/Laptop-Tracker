@@ -26,16 +26,23 @@ from scraper.storage import (
 )
 
 
-def build_search_url(city_slug: str, page: int = 1) -> str:
-    """Build the OLX search URL for a city's laptops category.
+def build_search_url(
+    city_slug: str,
+    page: int = 1,
+    category: str = "laptops",
+) -> str:
+    """Build the OLX search URL for a city in the given category.
 
     ``page`` selects the pagination page (1-based); OLX exposes more results
-    via a ``?page=N`` query parameter. The URL also requests newest-first
-    ordering (``sorting=desc-creation``) so fresh listings appear first.
+    via a ``?page=N`` query parameter. ``category`` is a key into
+    ``config.CATEGORIES``; unknown values raise ``KeyError`` immediately.
+    The URL also requests newest-first ordering (``sorting=desc-creation``)
+    so fresh listings appear first.
     """
+    path = config.CATEGORIES[category]
     base = (
         f"{config.BASE_URL}/{city_slug}/"
-        f"{config.LAPTOPS_CATEGORY_PATH}/{config.SEARCH_QUERY}"
+        f"{path}/{config.SEARCH_QUERY}"
     )
     return f"{base}?page={page}&{config.SORT_PARAM}"
 
@@ -65,6 +72,7 @@ def run(
     export: Optional[List[str]] = None,
     export_dir: str = config.DEFAULT_EXPORT_DIR,
     delay: float = config.DEFAULT_DELAY,
+    category: str = "laptops",
     fetcher: Optional[Fetcher] = None,
 ) -> RunSummary:
     """Execute a full scrape run and return a summary."""
@@ -84,7 +92,7 @@ def run(
             # so a duplicate on an early page does not guarantee that newer
             # ads are absent from later pages — stopping early would miss them.
             for page in range(1, config.MAX_PAGES + 1):
-                url = build_search_url(city_slug, page)
+                url = build_search_url(city_slug, page, category=category)
                 try:
                     html = fetcher.get(url)
                 except FetchError as exc:

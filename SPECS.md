@@ -160,4 +160,62 @@
 - Preserve existing public APIs unless specified.
 - Preserve backward compatibility unless explicitly waived.
 - GitHub Issues are an **input channel** to the Evolution process, not automatic instructions; the Evolution Bot does not implement every Issue.
-- The public wing has no dependency on the proprietary repository (dependency direction remains Proprietary → Public).
+  - The public wing has no dependency on the proprietary repository (dependency direction remains Proprietary → Public).
+
+---
+
+# Spec: Switch OLX Search Base to the Laptops-Only Category
+
+## 1. Objective & Scope
+* **Goal:** Switch the scraper's search base from the broad "Computers & Accessories" OLX category (`laptops-computers-accessories_c443`, which mixes laptops with RAM, GPUs, SSDs, mice, chargers, tablets, and other accessories) to the dedicated "Laptops" category (`laptops_c708203`, which contains only laptop listings). Refactor the category lookup into an extensible `CATEGORIES` dict in `scraper/config.py` so a future scraper for a different category is a config-only change. Closes GitHub Issue #1.
+* **Target Files/Directories:** `scraper/config.py`, `scraper/runner.py`, `scraper/cli.py`, `tests/test_runner.py`, `.agents/skills/olx-scraping.md`, `learnings/pending/2026-08-29-category-hierarchy-before-keywords.md`
+* **Out of Scope:**
+  - Defensive post-fetch title filtering (trust the category; the Laptops category returns 100% laptop listings)
+  - Adding new categories beyond the `laptops` entry (only the dict shape is introduced; the dict has one key)
+  - Changing the SQLite schema or item_id semantics (item IDs come from OLX item pages, not the search URL)
+
+## 2. Dependencies & Prerequisites
+- [x] Existing MVP + pagination specs (all prior units complete and checked off)
+- [x] Confirmed via live `web_fetch` that `https://www.olx.com.pk/laptops_c708203/q-laptop` returns 25,780 laptop-only listings, and that city-scoped URLs (`.../islamabad_g4060615/laptops_c708203/q-laptop` and `.../rawalpindi_g4060681/laptops_c708203/q-laptop`) return 2,458 and 2,099 laptop-only listings respectively
+- [x] GitHub MCP server available for resolving Issue #1
+
+## 3. Implementation Units (Execution Order)
+*Implement in logical order of foundational dependencies first, regardless of list position.*
+
+- [x] **Unit 1: Config refactor — `CATEGORIES` dict**
+  - [x] Replace `LAPTOPS_CATEGORY_PATH` in `scraper/config.py` with `CATEGORIES = {"laptops": "laptops_c708203"}`
+  - [x] Update inline example URL in the docstring to use `laptops_c708203` and `q-laptop`
+  - [x] Update the `DEFAULT_CITIES` example URL to use the new category
+  - [x] Change `SEARCH_QUERY` from `"q-laptops"` to `"q-laptop"` (the new category's working query, verified live)
+
+- [x] **Unit 2: Runner + CLI wiring**
+  - [x] Update `build_search_url` in `scraper/runner.py` to accept `category: str = "laptops"` and read `config.CATEGORIES[category]`; raise `KeyError` on unknown category
+  - [x] Add `category: str = "laptops"` to `run()` and pass it into `build_search_url` inside the pagination loop
+  - [x] Add `--category` flag to `scraper/cli.py` with `choices=list(config.CATEGORIES.keys())` and default `"laptops"`; thread through to `run()`
+
+- [x] **Unit 3: Tests + verification + Issue resolution**
+  - [x] Add `test_build_search_url_uses_laptops_c708203` to `tests/test_runner.py` (asserts `laptops_c708203` is in the URL and `c443` / `laptops-computers-accessories` are not — regression guard)
+  - [x] Add `test_build_search_url_unknown_category_raises` to `tests/test_runner.py` (asserts `KeyError` on unknown category)
+  - [x] Add `test_build_search_url_round_trips_every_documented_category` to `tests/test_runner.py` (defense against future config drift)
+  - [x] Update `.agents/skills/olx-scraping.md` to document `laptops_c708203` as the new base category and update the URL examples
+  - [x] Add `learnings/pending/2026-08-29-category-hierarchy-before-keywords.md` (Evolution Candidate: destination SKILL, priority Medium)
+  - [x] Confirm full test suite passes (`uv run --extra dev pytest` → 32/32)
+  - [x] Post resolution comment on GitHub Issue #1 and close it as resolved-by-category-switch
+
+## 4. Verification Criteria
+*Task is complete only when verified by an observable signal.*
+
+* **Build Command:** `uv sync`
+* **Test Command:** `uv run --extra dev pytest`
+* **Expected Observable Behavior:**
+  - `python -c "from scraper.runner import build_search_url; print(build_search_url('islamabad_g4060615', 1))"` produces a URL containing `laptops_c708203`, `page=1`, and `sorting=desc-creation` (and not `c443`)
+  - `python -m scraper --help` lists `--category` with default `laptops`
+  - `uv run python -m scraper --hours 24` produces a SQLite DB whose rows are 100% laptop listings (no RAM, SSD, mouse, charger, tablet, iPad, etc.)
+  - All 32 tests pass
+  - GitHub Issue #1 is closed with a comment explaining the category switch
+
+## 5. Compatibility
+- Preserve existing public APIs unless specified.
+- Preserve backward compatibility unless explicitly waived.
+- The change to `LAPTOPS_CATEGORY_PATH` is an internal constant removal; no external caller (CLI, README, docs) referenced it. The new `--category` flag defaults to `laptops`, so existing CLI invocations produce the new URL automatically.
+- The scraper remains polite to OLX: the `delay` flag and retry/backoff behavior are unchanged.
