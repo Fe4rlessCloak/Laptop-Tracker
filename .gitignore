@@ -21,3 +21,6 @@ data/
 
 # Environment Quirks
 .DS_Store
+
+#Secrets
+.env
