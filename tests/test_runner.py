@@ -6,6 +6,7 @@ capture, early-stop on duplicate, and early-stop on time-window exhaustion.
 """
 
 import os
+from datetime import date
 
 import pytest
 
@@ -130,8 +131,9 @@ def test_run_paginates_across_pages(tmp_path):
     ]
     conn.close()
 
-    assert os.path.exists(os.path.join(export_dir, "listings.csv"))
-    assert os.path.exists(os.path.join(export_dir, "listings.json"))
+    today_iso = date.today().isoformat()
+    assert os.path.exists(os.path.join(export_dir, f"listings-{today_iso}.csv"))
+    assert os.path.exists(os.path.join(export_dir, f"listings-{today_iso}.json"))
 
 
 def test_run_does_not_early_stop_on_duplicate(tmp_path):

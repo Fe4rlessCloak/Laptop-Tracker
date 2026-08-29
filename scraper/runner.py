@@ -12,6 +12,8 @@ The runner ties together the fetcher, parsers, and storage:
 
 from __future__ import annotations
 
+import time
+from datetime import date, datetime
 from typing import Dict, List, Optional
 
 from scraper import config
@@ -107,6 +109,8 @@ def run(
                 ]
                 summary.fetched += len(kept)
                 summary.skipped += len(listings) - len(kept)
+                ts = datetime.now().strftime("%H:%M:%S")
+                print(f"[{ts}] PAGE {page}  {len(kept)} HIT  {len(listings) - len(kept)} MISS  ({city})")
 
                 if not kept:
                     # Time-window exhausted: no fresh listings on this page.
@@ -126,17 +130,20 @@ def run(
                         fetcher.sleep_between()
 
                     is_new = upsert_listing(conn, listing)
+                    ts = datetime.now().strftime("%H:%M:%S")
                     if is_new:
                         summary.new += 1
+                        print(f"[{ts}] HIT   {listing['price']}  {listing['title'][:60]}")
                     else:
                         summary.updated += 1
 
+        today = date.today().isoformat()
         if "csv" in export:
-            path = f"{export_dir}/listings.csv"
+            path = f"{export_dir}/listings-{today}.csv"
             export_csv(fetch_all(conn), path)
             print(f"Exported CSV -> {path}")
         if "json" in export:
-            path = f"{export_dir}/listings.json"
+            path = f"{export_dir}/listings-{today}.json"
             export_json(fetch_all(conn), path)
             print(f"Exported JSON -> {path}")
     finally:

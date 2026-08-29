@@ -9,6 +9,7 @@ starts blocking plain HTTP requests.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from typing import Optional
 
 import requests
@@ -55,8 +56,12 @@ class Fetcher:
         for attempt in range(1, self.max_retries + 1):
             if attempt > 1:
                 time.sleep(self.backoff * attempt)
+            t0 = time.perf_counter()
             try:
                 resp = self.session.get(url, timeout=30)
+                elapsed = time.perf_counter() - t0
+                ts = datetime.now().strftime("%H:%M:%S")
+                print(f"[{ts}] GET  {elapsed:5.2f}s  {resp.status_code}  {url}")
                 if resp.status_code == 200:
                     return resp.text
                 if resp.status_code in _TRANSIENT_STATUS:
@@ -68,6 +73,9 @@ class Fetcher:
                     f"Non-retryable status {resp.status_code} for {url}"
                 )
             except requests.RequestException as exc:  # network-level failure
+                elapsed = time.perf_counter() - t0
+                ts = datetime.now().strftime("%H:%M:%S")
+                print(f"[{ts}] ERR  {elapsed:5.2f}s  {exc}")
                 last_error = exc
         raise FetchError(f"Failed to fetch {url} after retries: {last_error}")
 
