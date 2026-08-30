@@ -90,10 +90,20 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/fe4rlesscloak/laptop-tracker
+          # Tag plan:
+          #   - ``type=sha``              -> always :sha-<short>  (immutable per-build)
+          #   - ``type=raw,value=latest`` -> :latest only when this is the default branch
+          #   - ``type=raw,value={{tag}}``-> :vX.Y.Z only when this is a tag push
+          # The {{is_default_branch}} and {{is_tag}} expressions are evaluated
+          # by docker/metadata-action's OWN template engine (Handlebars-style),
+          # NOT by GitHub Actions. They render to lowercase ``true``/``false``
+          # strings, which is what the ``enable=`` attribute expects. Wrapping
+          # them in GitHub Actions' ``${{ ... }}`` syntax was the bug — that
+          # would render to ``True``/``False`` (capitalized) and fail.
           tags: |
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ github.ref_name }},enable={{is_tag}}
+            type=raw,value={{tag}},enable={{is_tag}}
 
       # Step 7: Build the Docker image and push all of the tags from the
       # previous step to ghcr.io. ``push: true`` is what actually publishes
