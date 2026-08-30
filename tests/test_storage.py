@@ -103,3 +103,90 @@ def test_export_json(tmp_path):
     assert data[0]["item_id"] == SAMPLE["item_id"]
     assert data[0]["image_urls"] == SAMPLE["image_urls"]
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# seller_name column (Release 1.0.0)
+# ---------------------------------------------------------------------------
+
+
+def test_seller_name_round_trips(db):
+    """A listing with seller_name stored, then read back, must equal the input."""
+    listing = dict(SAMPLE, seller_name="Ayesha Khan")
+    upsert_listing(db, listing)
+    rows = fetch_all(db)
+    assert rows[0]["seller_name"] == "Ayesha Khan"
+
+
+def test_seller_name_absent_stores_as_none(db):
+    """A listing without seller_name must read back as None (not raise)."""
+    listing = dict(SAMPLE)
+    listing.pop("seller_name", None)
+    upsert_listing(db, listing)
+    rows = fetch_all(db)
+    assert rows[0]["seller_name"] is None
+
+
+def test_seller_name_appears_in_csv_export(tmp_path):
+    """The CSV export must include the seller_name column."""
+    conn = connect(str(tmp_path / "test.db"))
+    upsert_listing(conn, dict(SAMPLE, seller_name="Bilal Ahmed"))
+    path = str(tmp_path / "out.csv")
+    export_csv(fetch_all(conn), path)
+    with open(path, encoding="utf-8") as fh:
+        content = fh.read()
+    assert "seller_name" in content
+    assert "Bilal Ahmed" in content
+    conn.close()
+
+
+def test_schema_migrates_legacy_db_without_seller_name(tmp_path):
+    """A DB created by an older release (no seller_name column) must be
+    upgraded in place so the new column appears without manual migration."""
+    import sqlite3
+
+    legacy_path = str(tmp_path / "legacy.db")
+    # Build a "legacy" schema without seller_name, exactly as the prior
+    # release would have created it.
+    legacy = sqlite3.connect(legacy_path)
+    legacy.execute(
+        """
+        CREATE TABLE listings (
+            item_id       TEXT PRIMARY KEY,
+            title         TEXT,
+            price         TEXT,
+            price_numeric REAL,
+            currency      TEXT,
+            location      TEXT,
+            city          TEXT,
+            relative_time TEXT,
+            posted_at     TEXT,
+            description   TEXT,
+            image_urls    TEXT,
+            item_url      TEXT,
+            is_featured   INTEGER,
+            scraped_at    TEXT
+        )
+        """
+    )
+    legacy.execute(
+        """
+        INSERT INTO listings (item_id, title) VALUES (?, ?)
+        """,
+        ("legacy-id-1", "Old Laptop"),
+    )
+    legacy.commit()
+    legacy.close()
+
+    # Re-open via the production connect(); the migration should add
+    # the seller_name column without raising.
+    conn = connect(legacy_path)
+    cols = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(listings)").fetchall()
+    }
+    assert "seller_name" in cols
+    # The pre-existing row must still be present, with seller_name NULL.
+    rows = fetch_all(conn)
+    assert any(r["item_id"] == "legacy-id-1" and r["seller_name"] is None for r in rows)
+    conn.close()

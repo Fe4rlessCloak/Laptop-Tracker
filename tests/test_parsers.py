@@ -151,3 +151,94 @@ def test_parse_item_detail_images():
     listing = {"item_id": "1", "description": None, "image_urls": []}
     result = parse_item_detail(ITEM_HTML, listing)
     assert len(result["image_urls"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Seller name extraction
+# ---------------------------------------------------------------------------
+
+ITEM_HTML_WITH_JSONLD = """
+<html><body>
+  <div class="_2961c394" aria-label="Description">
+    <div class="_7a99ad24"><span>A used laptop in great condition.</span></div>
+  </div>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "name": "Laptop Core i5",
+    "seller": {"@type": "Person", "name": "Ayesha Khan"},
+    "description": "..."
+  }
+  </script>
+</body></html>
+"""
+
+
+ITEM_HTML_WITH_POSTED_BY = """
+<html><body>
+  <div class="_2961c394" aria-label="Description">
+    <div class="_7a99ad24"><span>A used laptop in great condition.</span></div>
+  </div>
+  <div>
+    <span>Posted by</span>
+    <div><span class="a1c1940e b7af14b4">Bilal Ahmed </span></div>
+  </div>
+</body></html>
+"""
+
+
+ITEM_HTML_NO_SELLER = """
+<html><body>
+  <div class="_2961c394" aria-label="Description">
+    <div class="_7a99ad24"><span>A used laptop in great condition.</span></div>
+  </div>
+</body></html>
+"""
+
+
+ITEM_HTML_BROKEN_JSONLD = """
+<html><body>
+  <script type="application/ld+json">
+  {"@type": "Product", "name": "Laptop", "seller": {this is not valid json
+  </script>
+  <div>
+    <span>Posted by</span>
+    <div><span>Sara Malik</span></div>
+  </div>
+</body></html>
+"""
+
+
+def test_parse_item_detail_seller_name_from_jsonld():
+    listing = {"item_id": "1"}
+    result = parse_item_detail(ITEM_HTML_WITH_JSONLD, listing)
+    assert result["seller_name"] == "Ayesha Khan"
+
+
+def test_parse_item_detail_seller_name_from_posted_by():
+    listing = {"item_id": "1"}
+    result = parse_item_detail(ITEM_HTML_WITH_POSTED_BY, listing)
+    # Falls back to "Posted by <name>" when JSON-LD is absent.
+    assert result["seller_name"] == "Bilal Ahmed"
+
+
+def test_parse_item_detail_seller_name_absent():
+    listing = {"item_id": "1"}
+    result = parse_item_detail(ITEM_HTML_NO_SELLER, listing)
+    assert result["seller_name"] is None
+
+
+def test_parse_item_detail_seller_name_robust_to_bad_jsonld():
+    """Malformed JSON-LD must not crash; fall back to the visible label."""
+    listing = {"item_id": "1"}
+    result = parse_item_detail(ITEM_HTML_BROKEN_JSONLD, listing)
+    assert result["seller_name"] == "Sara Malik"
+
+
+def test_parse_item_detail_seller_name_preserves_existing_value():
+    """If the listing already has a seller_name, a re-scrape that fails to
+    extract one must not clobber the existing value."""
+    listing = {"item_id": "1", "seller_name": "Hassan Raza"}
+    result = parse_item_detail(ITEM_HTML_NO_SELLER, listing)
+    assert result["seller_name"] == "Hassan Raza"

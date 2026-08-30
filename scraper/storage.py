@@ -32,6 +32,7 @@ LISTING_COLUMNS = [
     "item_url",
     "is_featured",
     "scraped_at",
+    "seller_name",
 ]
 
 
@@ -50,7 +51,14 @@ def connect(db_path: str) -> sqlite3.Connection:
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
-    """Create the listings table if it does not already exist."""
+    """Create the listings table if it does not already exist.
+
+    For databases created by an older version of the scraper (before
+    ``seller_name`` was added in Release 1.0.0), perform an idempotent
+    ``ALTER TABLE ... ADD COLUMN`` so the new column is present without
+    requiring a manual migration. ``PRAGMA table_info`` reports the existing
+    columns; we add ``seller_name`` only if it is absent.
+    """
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS listings (
@@ -67,11 +75,32 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             image_urls    TEXT,
             item_url      TEXT,
             is_featured   INTEGER,
-            scraped_at    TEXT
+            scraped_at    TEXT,
+            seller_name   TEXT
         )
         """
     )
+    _ensure_column(conn, "listings", "seller_name", "TEXT")
     conn.commit()
+
+
+def _ensure_column(
+    conn: sqlite3.Connection, table: str, column: str, definition: str
+) -> None:
+    """Add ``column`` to ``table`` if it does not already exist.
+
+    This is the migration pattern used to bring older databases created by
+    earlier releases up to the current schema. It is intentionally
+    conservative: it inspects ``PRAGMA table_info`` and only runs
+    ``ALTER TABLE ... ADD COLUMN`` when the column is missing. The operation
+    is a no-op for databases already at the current schema.
+    """
+    existing = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def upsert_listing(conn: sqlite3.Connection, listing: Dict[str, Any]) -> bool:
@@ -122,6 +151,7 @@ def _listing_to_row(listing: Dict[str, Any]) -> Dict[str, Any]:
         "item_url": listing.get("item_url"),
         "is_featured": 1 if listing.get("is_featured") else 0,
         "scraped_at": listing.get("scraped_at") or _now_iso(),
+        "seller_name": listing.get("seller_name"),
     }
 
 
@@ -139,9 +169,11 @@ def _row_to_listing(row: sqlite3.Row) -> Dict[str, Any]:
 def listing_exists(conn: sqlite3.Connection, item_id: str) -> bool:
     """Return True if a listing with the given item_id is already stored.
 
-    Used by the runner's pagination early-stop: since OLX orders search results
-    newest-first, once we encounter an already-stored listing, everything older
-    on later pages is already known and we can stop paging.
+    Available for callers that need a cheap presence check. The runner
+    deliberately does NOT use this for a duplicate early-stop: featured ads
+    break OLX's newest-first ordering, so a duplicate on an early page does
+    not guarantee newer ads are absent from later pages. The runner stops on
+    time-window exhaustion or the MAX_PAGES cap instead.
     """
     row = conn.execute(
         "SELECT 1 FROM listings WHERE item_id = ?", (item_id,)

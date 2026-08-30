@@ -8,6 +8,7 @@ time strings ("1 day ago") into approximate ages for time-window filtering.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -246,6 +247,14 @@ def parse_item_detail(html: str, listing: Dict[str, Any]) -> Dict[str, Any]:
     if image_urls:
         listing["image_urls"] = image_urls
 
+    seller_name = _find_seller_name(soup)
+    # Do not overwrite an existing seller_name with None — re-scrape for
+    # description may use a stale item page; keep the last good value.
+    if seller_name:
+        listing["seller_name"] = seller_name
+    elif "seller_name" not in listing:
+        listing["seller_name"] = None
+
     return listing
 
 
@@ -288,3 +297,82 @@ def _find_image_urls(soup: BeautifulSoup) -> List[str]:
         if src and src.startswith("http") and src not in urls:
             urls.append(src)
     return urls
+
+
+# ---------------------------------------------------------------------------
+# Seller name extraction
+# ---------------------------------------------------------------------------
+
+# The seller name appears in two places on the OLX Pakistan item page:
+# 1. JSON-LD structured data (ApplicationLD+JSON, ``seller.name`` or top-level
+#    ``name`` on the seller object) — stable because it's standard schema.org.
+# 2. The visible "Posted by <name>" label near the profile photo — stable
+#    because the user-facing string "Posted by" survives UI redesigns even
+#    when class names change.
+#
+# We try (1) first, then (2). The selector for (2) anchors on the literal
+# text "Posted by" rather than on obfuscated OLX class names (e.g. ``_948d9e0a``)
+# which change between releases. See ``TECH_DEBT.md`` [DEBT-001] for the
+# known-fragility note; this is a best-effort extractor, not a contract.
+
+
+def _find_seller_name(soup: BeautifulSoup) -> Optional[str]:
+    """Return the seller's display name (str) or ``None`` if not present.
+
+    Two-pass strategy: parse the JSON-LD first (most stable), then fall back
+    to the visible "Posted by <name>" label. Returns the first non-empty
+    match, with leading/trailing whitespace stripped.
+
+    Best-effort extractor; see TECH_DEBT.md [DEBT-001]. // TECHDEBT: DEBT-001
+    """
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        name = _seller_name_from_jsonld(data)
+        if name:
+            return name
+
+    for el in soup.find_all(string=re.compile(r"^\s*Posted by\s*$")):
+        # The seller name is in the next sibling <div> as a <span>.
+        parent = el.parent
+        if parent is None:
+            continue
+        sibling = parent.find_next("div")
+        if sibling is None:
+            continue
+        span = sibling.find("span")
+        candidate = (span.get_text(" ", strip=True) if span else sibling.get_text(" ", strip=True)).strip()
+        if candidate:
+            return candidate
+    return None
+
+
+def _seller_name_from_jsonld(data: Any) -> Optional[str]:
+    """Extract seller name from parsed JSON-LD data, recursively."""
+    if isinstance(data, dict):
+        # Direct shape: {"seller": {"name": "..."}}
+        seller = data.get("seller")
+        if isinstance(seller, dict):
+            name = seller.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        # Graph shape: {"@graph": [...]}
+        graph = data.get("@graph")
+        if isinstance(graph, list):
+            for node in graph:
+                name = _seller_name_from_jsonld(node)
+                if name:
+                    return name
+        # Person top-level shape: {"@type": "Person", "name": "..."}
+        if data.get("@type") == "Person":
+            value = data.get("name")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    elif isinstance(data, list):
+        for item in data:
+            name = _seller_name_from_jsonld(item)
+            if name:
+                return name
+    return None
