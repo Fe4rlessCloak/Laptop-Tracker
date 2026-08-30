@@ -91,7 +91,7 @@ def build_search_url(city_slug: str, page: int = 1, category: str = "laptops") -
 
 - **Destination:** `SKILL`
 - **Priority:** Medium
-- **Status:** PENDING
+- **Status:** ACCEPTED
 - **Suggested Target:** `.agents/skills/olx-scraping.md` "URL Scheme" section
 
 #### Suggestion

@@ -3,9 +3,13 @@
 
 ## 1. Project Snapshot
 * **Tech Stack:** Python 3.10+; `requests` + `beautifulsoup4` for scraping; `sqlite3` (stdlib) for storage; CSV/JSON export via stdlib
-* **Build Command:** `uv sync`
+* **Build Command (local dev):** `uv sync`
 * **Test Command:** `uv run --extra dev pytest`
-* **Run Command:** `uv run python -m scraper`
+* **Run Command (local dev):** `uv run python -m scraper`
+* **Build Command (image):** `docker build -t laptop-tracker:dev .`
+* **Run Command (production):** `docker run --rm --pull=always -v laptop-tracker-data:/app/data ghcr.io/fe4rlesscloak/laptop-tracker:latest` (invoked automatically by `olx-scraper.timer` on the Ubuntu mini PC)
+* **Container Image:** `ghcr.io/fe4rlesscloak/laptop-tracker:latest` (built + published by `.github/workflows/release.yml` on push to `main` and on `v*` tags)
+* **Deploy Target:** Ubuntu mini PC, scheduled via systemd timer (twice daily at 09:00 and 21:00 local, `Persistent=true`)
 * **Lint/Format Command:** `python -m flake8` (optional; not yet configured)
 
 ---

@@ -25,6 +25,18 @@ other categories) does not re-discover them.
 ## URL Scheme
 
 - Base: `https://www.olx.com.pk`
+- **General rule — prefer a narrower upstream category over post-fetch
+  keyword filters.** When a site exposes sub-categories (OLX does — Laptops,
+  Computers & Accessories, Mobile Phones, Tablets, etc.), the narrower
+  sub-category is almost always a better fix than negative keyword matching:
+  it is maintained by the site, returns only the desired listings, and
+  removes maintenance burden from the scraper. Before proposing or adding
+  any `-keyword`, `EXCLUDED_KEYWORDS`, or post-fetch filtering machinery,
+  verify the upstream category hierarchy (via a live `web_fetch` of the
+  candidate narrower-category URL). If a narrower category already excludes
+  the unwanted listings, prefer it. This was the lesson from GitHub
+  Issue #1, where a `laptops_c708203` category check eliminated the entire
+  proposed exclusion-filter design.
 - Category path uses a slug + category ID, e.g. the Laptops category:
   `laptops_c708203`. **Use the dedicated Laptops category** (`laptops_c708203`),
   not the broader "Computers & Accessories" category
