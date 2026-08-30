@@ -87,7 +87,7 @@ jobs:
       # The short SHA tag is useful for rollback (see deploy/README.md).
       - name: Compute image tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/fe4rlesscloak/laptop-tracker
           # Tag plan:
@@ -97,9 +97,12 @@ jobs:
           # The {{is_default_branch}} and {{is_tag}} expressions are evaluated
           # by docker/metadata-action's OWN template engine (Handlebars-style),
           # NOT by GitHub Actions. They render to lowercase ``true``/``false``
-          # strings, which is what the ``enable=`` attribute expects. Wrapping
-          # them in GitHub Actions' ``${{ ... }}`` syntax was the bug — that
-          # would render to ``True``/``False`` (capitalized) and fail.
+          # strings, which is what the ``enable=`` attribute expects.
+          # NOTE: v5 has a known bug (docker/metadata-action#545) where the
+          # action's setGlobalExp() returns an empty string for these
+          # expressions instead of "true"/"false", causing
+          # "Invalid value for enable attribute: ". v6 fixes this. The
+          # upgrade is otherwise source-compatible: same tag input syntax.
           tags: |
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
