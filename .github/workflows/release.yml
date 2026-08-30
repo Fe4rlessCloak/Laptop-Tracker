@@ -1,0 +1,109 @@
+# GitHub Actions workflow: Release 1.0.0 CI/CD pipeline.
+#
+# This file is intentionally heavily commented so it doubles as a learning
+# artifact for GitHub Actions. Each step explains what it does in plain
+# English. If you want to know what the workflow does at a glance, read
+# the "Pipeline summary" block below.
+#
+# Pipeline summary
+# ----------------
+# On push to main          -> run tests -> build image -> push :latest + :sha-abc1234 to ghcr.io
+# On push of v* tag (e.g. v1.0.0) -> same as above, also tags the image with the version
+# On manual dispatch       -> same as push-to-main (useful for one-off re-runs)
+#
+# The image lands in GitHub Container Registry at:
+#   ghcr.io/fe4rlesscloak/laptop-tracker
+#
+# The Ubuntu mini PC pulls it on a systemd timer (see deploy/systemd/).
+# Rollback: change :latest to a specific tag in the systemd service.
+
+name: Release
+
+# on: when does this workflow run? Three triggers:
+#   1. push to main          -> every commit to the trunk publishes a fresh image
+#   2. push of a v* tag      -> versioned releases (e.g. v1.0.0, v1.0.1)
+#   3. workflow_dispatch     -> a "Run workflow" button in the Actions tab
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+# permissions: what the workflow's automatic GITHUB_TOKEN is allowed to do.
+# - contents: read   -> checkout the repo
+# - packages: write  -> push the built image to ghcr.io (write to packages)
+# Without ``packages: write`` the docker push step fails with 403.
+permissions:
+  contents: read
+  packages: write
+
+# A single job does everything. ``ubuntu-latest`` gives us a fast runner
+# with Docker pre-installed.
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Check out the repository source code into the runner.
+      # Without this, the runner has no access to the .py files.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Python so the test step (next) can run pytest.
+      # ``cache: 'pip'`` reuses pip's download cache between runs, which
+      # shaves seconds off the install.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # Step 3: Install the package + the ``dev`` extra (which contains
+      # pytest). ``-e`` installs in editable mode so local source changes
+      # are reflected in the test run.
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      # Step 4: Run the test suite. THIS IS THE GATE. If pytest fails,
+      # the workflow stops here and no image is published. This is the
+      # single most important step — it ensures the published image
+      # represents a green test run.
+      - name: Run tests
+        run: pytest -q
+
+      # Step 5: Log in to GitHub Container Registry using the workflow's
+      # automatic GITHUB_TOKEN. No PAT setup is required. The token is
+      # scoped per-workflow and expires after the run.
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 6: Compute the image tags this build should be published
+      # under. ``docker/metadata-action`` looks at the trigger context:
+      #   - On push to main: tags are ``latest`` and ``sha-<short-sha>``
+      #   - On tag v1.0.0:  tags are ``v1.0.0`` and ``latest``
+      # The short SHA tag is useful for rollback (see deploy/README.md).
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/fe4rlesscloak/laptop-tracker
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ github.ref_name }},enable={{is_tag}}
+
+      # Step 7: Build the Docker image and push all of the tags from the
+      # previous step to ghcr.io. ``push: true`` is what actually publishes
+      # the image. The cache-from/cache-to GHA feature is not enabled to
+      # keep the workflow simple — the image rebuilds from scratch each
+      # run, which is fine for a small Python project.
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

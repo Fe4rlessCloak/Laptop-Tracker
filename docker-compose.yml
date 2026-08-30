@@ -1,0 +1,33 @@
+# docker-compose for the OLX Pakistan laptop scraper.
+#
+# This file is a thin wrapper around ``docker run`` for local convenience
+# and as the deployment contract for the systemd timer (Unit 7). Every
+# meaningful setting here maps 1:1 to a ``docker run`` flag.
+#
+# Volume: ``laptop-tracker-data`` is a NAMED VOLUME — it persists on the
+# host between container invocations. The SQLite DB (``olx.db``) and the
+# dated CSV/JSON exports all live inside it. A ``docker volume inspect
+# laptop-tracker-data`` on the Ubuntu box shows the on-disk path.
+#
+# Typical usage:
+#   docker compose run --rm scraper --hours 24 --export csv json
+#   docker compose run --rm scraper --cities islamabad --hours 12
+
+services:
+  scraper:
+    # The image pushed by .github/workflows/release.yml. The Ubuntu
+    # systemd timer always pulls :latest so a fresh release is picked up
+    # on the next scheduled run.
+    image: ghcr.io/fe4rlesscloak/laptop-tracker:latest
+    pull_policy: always
+    # Default command; override per-invocation (see ``Typical usage`` above).
+    command: ["--hours", "24", "--export", "csv", "json"]
+    volumes:
+      - laptop-tracker-data:/app/data
+
+volumes:
+  laptop-tracker-data:
+    # Named volume managed by Docker. Survives container restarts and
+    # explicit ``docker compose down`` (use ``docker compose down -v`` to
+    # destroy it). The systemd service on the Ubuntu box depends on this
+    # name — do not rename it without updating deploy/systemd/*.service.

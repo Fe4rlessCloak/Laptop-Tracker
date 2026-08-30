@@ -1,0 +1,40 @@
+# Anything below is excluded from the Docker build context. Smaller
+# context = faster builds, smaller images, and no risk of accidentally
+# baking secrets or dev artifacts into the image.
+
+# Version control
+.git/
+.gitignore
+
+# Local dev tooling
+.commandcode/
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# Tests run in CI, not in the image. Including them only inflates layers.
+tests/
+
+# Build artifacts
+olx_scraper.egg-info/
+*.egg-info/
+build/
+dist/
+
+# Runtime data — the SQLite DB and exports live in the named volume, not
+# in the image. Excluding ``data/`` ensures an old dev DB is never baked
+# into a release image.
+data/
+
+# Local-only operational artifacts
+.agents/
+learnings/
+.logs/
+deploy/
+
+# Environment / secrets
+.env
+.env.*
+*.local

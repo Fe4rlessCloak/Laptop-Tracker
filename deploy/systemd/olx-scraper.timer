@@ -1,0 +1,36 @@
+[Unit]
+# Schedules the olx-scraper.service unit. The service itself is a one-shot
+# ``docker run`` (see olx-scraper.service); the timer just fires it twice
+# a day at 09:00 and 21:00 local time.
+Description=Run OLX laptop scraper twice a day (09:00 and 21:00)
+
+[Timer]
+# ``OnCalendar`` accepts systemd time specs. This expression means:
+#   "Every day at 09:00 and 21:00, every day of the week, every month."
+# Adjust the hours to taste — e.g. ``*-*-* 06,18:00:00`` for 6am/6pm.
+# Tip: avoid the exact :00 mark if other services do too, to spread
+# out wake-the-disk load. ``57 8 * * *`` and ``3 21 * * *`` work fine
+# and avoid the wall-clock alignment.
+OnCalendar=*-*-* 09:00:00
+OnCalendar=*-*-* 21:00:00
+
+# ``Persistent=true`` is critical for a once-or-twice-a-day job:
+# if the box is off at 09:00 and 21:00, systemd fires the unit
+# immediately at next boot instead of waiting until tomorrow. Without
+# this, an outage loses you a whole day's worth of data.
+Persistent=true
+
+# ``AccuracySec=1m`` allows systemd to fire the timer up to one minute
+# before or after the exact wall-clock time. This avoids waking the box
+# from sleep at exactly 09:00:00.000, which is both unnecessary and a
+# battery/SSD-wear hit on laptops.
+AccuracySec=1m
+
+# The unit to fire. Must match the ``[Install]`` filename below.
+Unit=olx-scraper.service
+
+[Install]
+# ``enable`` symlinks the timer into multi-user.target.wants/, so it
+# starts automatically at boot. ``systemctl enable --now olx-scraper.timer``
+# does both enable and start in one command (see deploy/README.md).
+WantedBy=timers.target

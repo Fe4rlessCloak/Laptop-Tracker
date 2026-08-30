@@ -1,0 +1,46 @@
+[Unit]
+# Human-readable description shown by ``systemctl status``.
+Description=OLX Pakistan laptop scraper (one-shot docker run)
+# Only start this service AFTER the network and Docker daemon are ready.
+# ``network-online.target`` waits for an actual routable address, not just
+# a configured interface — this matters when the box is on Wi-Fi and the
+# network is slow to come up.
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+# ``Type=oneshot`` tells systemd this service runs a single command to
+# completion and exits — exactly what ``docker run --rm`` is. systemd
+# considers the unit "active" only while the container is running, and
+# "inactive" after it exits. The ``olx-scraper.timer`` unit (see
+# olx-scraper.timer) is the one that fires it on a schedule.
+Type=oneshot
+
+# The actual command. ``--rm`` cleans up the container on exit;
+# ``--pull=always`` makes sure we always run the freshly pushed image
+# (e.g. after a release). The named volume ``laptop-tracker-data`` is
+# created automatically on first run; the spec lives in docker-compose.yml.
+#
+# ROLLBACK: change ``:latest`` below to a specific tag (e.g. ``:sha-abc1234``
+# or ``:v1.0.0``) and re-run ``sudo systemctl daemon-reload``. See
+# deploy/README.md for the full rollback procedure.
+ExecStart=/usr/bin/docker run --rm --pull=always \
+    -v laptop-tracker-data:/app/data \
+    ghcr.io/fe4rlesscloak/laptop-tracker:latest \
+    --hours 24 --export csv json
+
+# Hard timeouts so a stuck container doesn't pin the timer slot forever.
+# 30 minutes is generous: a healthy run against Islamabad+Rawalpindi
+# completes in 5-10 minutes. Bump this if you add more cities.
+TimeoutStartSec=1800
+TimeoutStopSec=60
+
+# Standard journal logging. View with:
+#   sudo journalctl -u olx-scraper.service -n 100
+StandardOutput=journal
+StandardError=journal
+
+# Note: this unit deliberately has no [Install] section. The service is
+# only ever started by olx-scraper.timer, never ``enable``d at boot. The
+# timer (which DOES have [Install]) is the only thing you ``enable``.
