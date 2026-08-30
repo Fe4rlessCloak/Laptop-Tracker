@@ -81,32 +81,44 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Step 6: Compute the image tags this build should be published
-      # under. ``docker/metadata-action`` looks at the trigger context:
-      #   - On push to main: tags are ``latest`` and ``sha-<short-sha>``
-      #   - On tag v1.0.0:  tags are ``v1.0.0`` and ``latest``
+      # under. ``docker/metadata-action`` looks at the trigger context.
+      # We deliberately keep the ``enable=`` attribute OFF because
+      # docker/metadata-action (v5 and v6 as of 2026-08) has a bug where
+      # the action's setGlobalExp() does not evaluate template expressions
+      # inside ``enable=`` — it passes them through as literal strings
+      # (docker/metadata-action#545). The workaround is to let the
+      # action's own logic drop empty {{tag}} values automatically:
+      #   - On push to main:    tags are :latest + :sha-<short>
+      #   - On push of v1.0.0:  tags are :latest + :sha-<short> + :v1.0.0
       # The short SHA tag is useful for rollback (see deploy/README.md).
       - name: Compute image tags
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/fe4rlesscloak/laptop-tracker
-          # Tag plan:
-          #   - ``type=sha``              -> always :sha-<short>  (immutable per-build)
-          #   - ``type=raw,value=latest`` -> :latest only when this is the default branch
-          #   - ``type=raw,value={{tag}}``-> :vX.Y.Z only when this is a tag push
-          # The {{is_default_branch}} and {{is_tag}} expressions are evaluated
-          # by docker/metadata-action's OWN template engine (Handlebars-style),
-          # NOT by GitHub Actions. They render to lowercase ``true``/``false``
-          # strings, which is what the ``enable=`` attribute expects.
-          # NOTE: v5 has a known bug (docker/metadata-action#545) where the
-          # action's setGlobalExp() returns an empty string for these
-          # expressions instead of "true"/"false", causing
-          # "Invalid value for enable attribute: ". v6 fixes this. The
-          # upgrade is otherwise source-compatible: same tag input syntax.
+          # Tag plan (intentionally minimal to avoid docker/metadata-action
+          # bugs #545 and related issues with the ``enable=`` attribute):
+          #   - ``type=sha``              -> always :sha-<short> (immutable per-build)
+          #   - ``type=raw,value=latest`` -> always :latest
+          #   - ``type=raw,value={{tag}}``-> on tag pushes, :vX.Y.Z
+          #                                  (on branch pushes, {{tag}} is the
+          #                                   empty string and the action
+          #                                   drops the entry automatically)
+          #
+          # Why no ``enable={{is_default_branch}}`` or ``enable={{is_tag}}``?
+          # docker/metadata-action's setGlobalExp() does NOT evaluate
+          # template expressions inside the ``enable=`` attribute — it
+          # passes the literal ``{{is_default_branch}}`` string through
+          # (see docker/metadata-action#545, still open in v6). The
+          # workaround is to keep the ``enable=`` attribute OFF and let
+          # the action's own logic (e.g. dropping empty {{tag}} values)
+          # do the gating. This produces:
+          #   push to main  -> :latest + :sha-<short>           (no :vX.Y.Z)
+          #   push of v1.0.0 -> :latest + :sha-<short> + :v1.0.0
           tags: |
             type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value={{tag}},enable={{is_tag}}
+            type=raw,value=latest
+            type=raw,value={{tag}}
 
       # Step 7: Build the Docker image and push all of the tags from the
       # previous step to ghcr.io. ``push: true`` is what actually publishes

@@ -33,38 +33,46 @@ GitHub's runner, not on the developer's Mac.
 
 ## Root Cause
 
-`docker/metadata-action@v5` has a known bug
+`docker/metadata-action` (v5 and v6 as of 2026-08) has a known bug
 ([docker/metadata-action#545](https://github.com/docker/metadata-action/issues/545))
-where `setGlobalExp()` returns an **empty string** for the built-in
-expressions `{{is_default_branch}}` and `{{is_tag}}` instead of
-`"true"` / `"false"`. The action then rejects the empty value with
-"Invalid value for enable attribute: ".
+where `setGlobalExp()` does **not** evaluate template expressions
+inside the `enable=` attribute — it passes the literal string
+`{{is_default_branch}}` through. The action then rejects the literal
+`"{{is_default_branch}}"` value with "Invalid value for enable
+attribute: " (the value is rendered to an empty string in the error
+message, which made the original diagnosis harder — a fix-only-on-v6
+upgrade did not help).
 
-The bug is fixed on `v6` (and the maintainer opened PR #662 to improve
-the error message on `v5` after the same issue was reported by
-multiple users in August 2025).
+The bug is still open in v6 as of 2026-08-30. The maintainer opened
+PR #662 to improve the error message; the underlying bug is not yet
+fixed in any released version.
 
-The YAML was always valid; the bug is in the action's runtime template
-evaluation, which only runs on GitHub's hosted runner and cannot be
-exercised from a Mac.
+The YAML was always valid; the bug is in the action's runtime
+template evaluation, which only runs on GitHub's hosted runner and
+cannot be exercised from a Mac.
 
 ---
 
 ## Prevention Rule
 
-**When designing GitHub Actions workflows, pin the most recent major
-version of any third-party action.** Avoid `@v5`-and-older on actions
-that handle complex template expressions, because:
+**Never use the `enable={{...}}` template syntax in
+`docker/metadata-action` until upstream issue #545 is fixed (no
+released version as of 2026-08-30).** The action's setGlobalExp()
+does not evaluate template expressions inside the `enable=` attribute;
+it passes them through as literal strings, which the action then
+rejects. The workaround is to omit the `enable=` attribute entirely
+and rely on the action's own logic (e.g. dropping empty `{{tag}}`
+values) to do the gating. See the Blueprint below for the safe tag
+configuration.
 
-1. The runtime is hidden behind `actions/checkout` and only fully
-   executes on GitHub's runner, not on the developer's machine.
-2. There is no easy local validator that catches this class of bug
-   (yamllint doesn't run the action, actionlint only checks the
-   step's `with:` block, not the action's internal template engine).
-3. v5+ releases of major actions like `docker/metadata-action`,
-   `docker/build-push-action`, and `docker/login-action` are
-   well-maintained and largely source-compatible with their previous
-   major; the cost of bumping is small.
+**When designing GitHub Actions workflows, pin the most recent major
+version of any third-party action.** The runtime is hidden behind
+`actions/checkout` and only fully executes on GitHub's runner, not on
+the developer's machine. There is no easy local validator that
+catches this class of bug (yamllint doesn't run the action,
+actionlint only checks the step's `with:` block, not the action's
+internal template engine). Version bumps are usually source-
+compatible for well-maintained actions.
 
 **Pre-flight check before pushing CI changes to a fresh workflow:**
 for each `uses: third/action@<version>` line, check that the version
@@ -75,27 +83,37 @@ of "works locally, fails on the runner" bug.
 
 **When the workflow fails on a fresh push:** treat the failure log as
 ground truth and trace the failing step's input back to the action's
-source code on `master` (not the published `v*`). The fix is often a
-version bump, not a YAML change.
+source code on `master` (not the published `v*`). Read the action's
+own test suite (`__tests__/`) to confirm the syntax you're using
+actually works in the published version. The fix is often a YAML
+change, not a version bump.
 
 ---
 
 ## Blueprint
 
 ```yaml
-# BAD (v5 has #545):
-- uses: docker/metadata-action@v5
-  with:
-    tags: |
-      type=raw,value=latest,enable={{is_default_branch}}
-      type=raw,value={{tag}},enable={{is_tag}}
-
-# GOOD (v6 fixes #545, source-compatible):
+# BAD (broken on v5 AND v6, see docker/metadata-action#545):
 - uses: docker/metadata-action@v6
   with:
     tags: |
       type=raw,value=latest,enable={{is_default_branch}}
       type=raw,value={{tag}},enable={{is_tag}}
+# The action passes the literal string "{{is_default_branch}}" through
+# setGlobalExp(), and the action then rejects it with
+# "Invalid value for enable attribute: ".
+
+# GOOD (works on v6 today, until #545 is fixed upstream):
+- uses: docker/metadata-action@v6
+  with:
+    tags: |
+      type=sha,format=short      # :sha-<short> on every push (immutable)
+      type=raw,value=latest      # :latest on every push
+      type=raw,value={{tag}}     # :vX.Y.Z on tag pushes (empty on branch pushes;
+                                 #  the action drops the empty value automatically)
+# Result:
+#   push to main   -> :latest + :sha-<short>            (no :vX.Y.Z)
+#   push of v1.0.0 -> :latest + :sha-<short> + :v1.0.0
 ```
 
 Other actions in the same family with similar concerns as of 2026-08:
