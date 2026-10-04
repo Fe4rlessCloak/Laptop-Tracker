@@ -302,6 +302,7 @@
   - [x] `docker build -t laptop-tracker:dev .` succeeds locally
   - [x] `docker run --rm -v laptop-tracker-data:/app/data laptop-tracker:dev --hours 1 --export csv json` runs end-to-end against a fresh container (this is the "release gate" check — the developer does this once before tagging v1.0.0)
   - [x] `.github/workflows/release.yml` passes `actionlint` or `yamllint` (no schema errors)
+  - **Evolution clarification (2026-10-04):** Static workflow validation does not prove third-party action runtime behavior. Future workflow changes must inspect the selected release's input schema and release notes, justify version selection, and verify the actual hosted run before claiming publication success. This clarifies verification guidance; it does not assert a new check was performed for this historical release.
   - [x] `systemd-analyze verify deploy/systemd/olx-scraper.service` and `... olx-scraper.timer` succeed (the developer runs these locally if `systemd-analyze` is installed; otherwise by inspection)
   - [x] The README's CI badge URL resolves to the right repo
 
@@ -332,3 +333,101 @@
 - The `Dockerfile` entrypoint is `python -m scraper` so existing CLI flags work identically inside the container.
 - The scraper remains polite to OLX: `DEFAULT_DELAY` and retry/backoff are unchanged.
 - No new third-party runtime dependencies — `Dockerfile` uses the stdlib `pip` to install the existing `pyproject.toml` dependencies.
+
+---
+
+# Spec: Persistent Monitoring and Predefined Listing Reports
+
+## 1. Objective & Scope
+* **Goal:** Provide Grafana listing reports and application-performance dashboards backed by Prometheus and a durable metrics exporter. Preserve the scheduled one-shot scraper and its existing listing schema and upsert behavior; retain monitoring history separately and serve listing reports from a consistent read-only reporting snapshot.
+* **Status:** Approved by the developer on 2026-10-04. Stop after planning; implementation will occur in a separate session. This is the active implementation specification; preceding specifications are historical.
+* **Target Files/Directories:** [scraper/](scraper/), [tests/](tests/), [pyproject.toml](pyproject.toml), [uv.lock](uv.lock), [Dockerfile](Dockerfile), [docker-compose.yml](docker-compose.yml), [deploy/](deploy/), [README.md](README.md), and [.github/workflows/release.yml](.github/workflows/release.yml) only if required to package/publish the exporter. New monitoring modules, tests, and Grafana/Prometheus provisioning assets belong within those directories. Do not modify operational guidance during implementation.
+* **Out of Scope:** Arbitrary SQL editor or custom reporting frontend; browser-based database writes; OLX posting-date filters; physical-laptop/repost deduplication; database-operation timing; host-resource monitoring; notifications and external uptime monitoring; public internet exposure; HTTPS/certificate infrastructure for this release; proprietary integrations; changes to scraper politeness or scheduled frequency.
+
+### Agreed Reporting Semantics
+* A unique listing is a distinct OLX listing ID, not necessarily a distinct physical laptop. Show all-time unique listings, unique discoveries today, and discoveries in a selected date range.
+* A listing observation is an in-window listing encounter accepted for processing, including repeat encounters across pages/runs. Count once per processed listing encounter, not once per HTTP retry or duplicate anchor. Retain partial listings after detail-fetch failure as before. Distinguish attempted observations from successfully stored observations if storage fails.
+* Discovery reports use first-discovery date; activity reports use observation/fetch date. Never label observation totals as unique listings. Show today's and all-time observation totals from accurate tracking onset separately from archived lower-bound counts.
+* Initial listing filters: discovery date range, city (all or one configured city), minimum/maximum numeric price in PKR. Display matching count and a bounded listing table with title, price, city, discovery date, and OLX link. Price filters use latest stored price, not historical price at discovery. Unknown prices are excluded when numeric bounds are selected and otherwise may appear as unknown. Invalid/reversed ranges must produce a clear validation/empty-state response, not unsafe query interpolation.
+* Store timestamps in UTC; use Asia/Karachi for dashboard calendar dates and "today" by default. Use consistent start-inclusive/end-exclusive boundaries. Explicitly distinguish discovery, observation, and snapshot freshness dates.
+
+### Historical Data and Schema Boundary
+* Read-only inspection on 2026-10-04 found 8,112 distinct IDs in the production backup and one listing table with existing scrape and estimated posting timestamps. All 36 daily JSON exports from August 30 through October 4 cover those IDs; CSV counterparts agree on IDs and scrape timestamps. 5,808 IDs have earlier timestamps in archives; 14,585 distinct retained ID/timestamp pairs are a historical observation lower bound, not an exact total.
+* Preserve the existing listing table columns, export column order, and latest-scrape timestamp/upsert meaning. Do not add discovery columns or history tables to the listing database.
+* Use a separate persistent SQLite monitoring database for discovery records, observations, run state, and cumulative performance aggregates. First-discovery records are immutable once established, except explicit idempotent archive reconciliation that can replace an estimated archived time with an earlier archived time. Never recategorize existing baseline listings as new discoveries on deployment.
+* Import earliest retained archive scrape timestamps as historical discovery estimates. A short dashboard note is sufficient: "Historical discovery dates are reconstructed from daily exports." Developer accepts day-scale uncertainty; do not promise an absolute one-day error bound.
+* Import historical ID/timestamp pairs only as separately labeled lower-bound archive observations. Repeated cumulative snapshot rows must not inflate counts. Do not invent missing HTTP or run history. Missing archive coverage must be reported; baseline listings without a recoverable date remain in all-time counts with unknown discovery date.
+* Imports are explicit operator actions using configurable paths, read-only sources, and idempotent identifiers. Do not bake inspection copies or production data into images, tests, commits, or default deployment paths.
+
+### Architecture, Persistence, and Access
+* Three long-running services: Grafana, Prometheus, and a metrics exporter. Scraper remains timer-triggered, short-lived, and able to run while the monitoring services are stopped. Grafana uses the SQLite datasource plugin for reporting and Prometheus for performance.
+* Exporter reads durable cumulative counters/histograms and run state, exposing metrics internally even after scraper exit or exporter restart. Do not make measurements depend on Grafana/Prometheus availability. No Pushgateway required.
+* Publish a combined reporting SQLite snapshot containing the listing fields and necessary monitoring reporting data after each run, including gracefully handled partial failures. Use consistent SQLite backup/read transactions, not raw copies of a live database. Build privately, integrity-check, and atomically replace the last good snapshot; no half-published files. Establish a common committed observation watermark and document cross-database recovery so the snapshot cannot silently claim unmatched listing/observation state is complete.
+* A killed run may leave the last good snapshot unchanged. Persist run start before work, checkpoint completed observations/performance, and detect incomplete runs through the exporter. Snapshot refresh success/failure and timestamp are separate from scrape success. Readers must reopen after snapshot replacement; verify freshness with the actual plugin. Snapshot queries may be stale by one run by design.
+* Use distinct durable volumes for scraper data, monitoring state, reporting snapshots, Grafana state, and Prometheus history as appropriate. Exporter/report readers receive only required read-only access. Snapshot publisher is the authorized writer. Never grant Docker socket or host filesystem access to Grafana/exporter.
+* Fix Compose volume identity explicitly so production and Compose use the existing literal named scraper volume, not a project-prefixed replacement. No automatic deletion/renaming of production volumes.
+* Preserve twice-daily systemd scheduling. Long-running services restart automatically and recover on host reboot. Container replacement is acceptable; persistent volumes, not container identity, retain state.
+* Only Grafana is exposed, on explicitly configurable trusted LAN and Tailscale host addresses (no wildcard public bind). Prometheus/exporter have no host-published ports. Document Docker-aware firewall checks, Tailscale access restrictions, no router port forwarding, and tests of both approved access paths.
+* **Explicit developer-approved transport compromise:** Grafana uses HTTP on the trusted LAN in this first release. LAN passwords/session cookies are unencrypted and susceptible to interception; Tailscale protects traffic only when its endpoint is used. Do not imply HTTP is encrypted, silently disable existing security controls, or expose Grafana publicly. Prefer Tailscale access when feasible.
+* Require Grafana login; disable anonymous access and public signup. Operator supplies non-default admin credentials through protected runtime secret files; never invent or commit credentials. Use a non-admin Viewer account for ordinary reports, restricting datasource/dashboard administration to trusted administrators. Predefined dashboards are not an arbitrary-query authorization boundary; retain plugin security restrictions and read-only filesystem protections.
+* Pin supported Grafana/Prometheus/plugin versions; inspect their selected-release documentation. Keep SQLite query-only, attachment restrictions, and internal/private database blocklists enabled. Reporting mount must not include monitoring writable state, secrets, or Grafana's internal database. Verify platform support and permissions without privileged/root workarounds.
+* Prometheus retains up to 90 days with an initial configurable 2 GiB retention-size cap; whichever limit is reached first wins. Provide volume free-space headroom because retention limits are not strict total-volume quotas. Discovery/observation history and lifetime performance counters remain indefinite initially; document disk growth and backup procedures.
+
+### Metrics and Dashboard Contract
+* Measure each HTTP attempt, including failed/time-out attempts, with monotonic duration timing; exclude politeness sleep and retry backoff. Bound labels to page type (search/detail), configured city/category where available, and fixed status/outcome classes. Never label by URL, listing ID, seller, exception text, or run ID.
+* Expose durable cumulative histogram buckets/count/sum for attempt duration; document buckets covering expected response times through request timeout. P50/P99 are histogram estimates over the selected performance window, separated by search/detail and accompanied by sample counts. No samples display "No data", not zero latency.
+* Attempt failure rate = unsuccessful HTTP attempts / all HTTP attempts. Final-fetch failure rate = logical fetches exhausted or otherwise finally failed / all logical fetches. Retries = additional attempts after the first. Recovered retries count as attempt failures but not final-fetch failures. Zero denominators display unavailable/no data.
+* Persist bounded request aggregates frequently enough that completed work survives normal exceptions and abrupt process death; never pretend in-flight attempts completed. Lifetime aggregates survive scraper/exporter restarts and must not replay when observed repeatedly by Prometheus. Keep imported listing observations out of HTTP metrics.
+* Record run start/completion, monotonic duration including delays, new/stored/repeat/skipped/error counts, and outcomes completed / completed-with-fetch-errors / failed. Unfinished/abandoned runs remain visible, not falsely successful. Preserve existing CLI behavior unless a change is explicitly required; run health is not inferred solely from process exit code.
+* Show latest start, latest completion, latest fully successful completion, run duration/outcome, exporter availability, and reporting-snapshot freshness. Initial dashboard warning default: no completed run for 26 hours, accommodating the existing 12-hour schedule; make configurable. Missing baseline data shows "Not yet observed". No notification contact points or Alertmanager service in this release.
+* Prometheus must collect durable histograms while jobs are running, not solely a last-run histogram that is overwritten. Test multiple runs between scrapes and exporter downtime. Exact business/calendar counts come from persisted observation/discovery records, not approximate Prometheus counter increases. Explain initial Prometheus baseline and visibility gaps; do not claim percentiles before collection began.
+
+## 2. Dependencies & Prerequisites
+- [x] Interview decisions above approved individually; implementation approval remains pending.
+- [x] Production database and daily export coverage inspected read-only; data files remain ignored by Git.
+- [x] GitHub intake completed via existing integration: no open issues on 2026-10-04. [BLOCKED.md](BLOCKED.md) records the earlier tooling blocker as resolved.
+- [ ] Verify selected Grafana, Prometheus, SQLite plugin, and Python instrumentation versions and mini-PC architecture compatibility; lock dependencies and plugin security behavior before implementation consumers.
+- [ ] Operator provides LAN/Tailscale bind addresses, runtime Grafana credentials, Docker volume permissions, and deployment access during deployment. These are runtime inputs, not credentials to place in the specification.
+
+## 3. Implementation Units (Execution Order)
+*Implement in logical order of foundational dependencies first, regardless of list position.*
+
+- [ ] **Unit 1: Durable monitoring model and historical import**
+  - [ ] Add isolated monitoring storage and explicit archive import under [scraper/](scraper/), with compatible local defaults and configurable paths; preserve listing schema/upsert/export semantics.
+  - [ ] Implement immutable discovery records, idempotent import/reconciliation, observation identifiers, run lifecycle, cumulative metrics, schema migration for monitoring only, and restart/recovery consistency.
+  - [ ] Add synthetic-fixture tests for repeated observations, archived estimates, missing history, duplicate snapshots/imports, timezone boundaries, and storage failures without using production data.
+- [ ] **Unit 2: Instrumentation and read-only exporter**
+  - [ ] Instrument [fetcher.py](scraper/fetcher.py) and [runner.py](scraper/runner.py) for the agreed metrics, preserving retry/delay behavior and injected test fetchers; persist state independent of monitoring-service reachability.
+  - [ ] Package an exporter entry point using the existing image where compatible, without changing its default scraper entry point. Add required locked dependencies only.
+  - [ ] Test successful/failed/recovered requests, timeouts, partial/fatal/unfinished runs, histogram correctness, bounded labels, multiple runs, concurrent reads, and restart survival.
+- [ ] **Unit 3: Reporting publication and predefined dashboards**
+  - [ ] Implement integrity-checked atomic reporting snapshots, watermark/reconciliation, explicit freshness, bootstrap empty states, and preservation of last good snapshot on publication failure.
+  - [ ] Provision SQLite and Prometheus datasources and both dashboards under [deploy/](deploy/), with secure plugin settings and the specified filters/counts/metrics/warnings.
+  - [ ] Test query ranges, latest-price semantics, safe variable handling, historical note, unknown dates/prices, observation-vs-discovery distinctions, and actual plugin refresh after snapshot replacement.
+- [ ] **Unit 4: Persistent deployment and operator documentation**
+  - [ ] Extend [docker-compose.yml](docker-compose.yml) and deployment assets for long-running service lifecycle, explicit shared volume identity, least-privilege mounts, health checks, bind-address/secrets requirements, pinned versions, and retention.
+  - [ ] Preserve the one-shot timer and adapt mounts/publication paths as required. Monitoring downtime must not prevent scheduled scraping.
+  - [ ] Update [README.md](README.md) and [deploy/README.md](deploy/README.md) with setup, historical import, LAN/Tailscale exposure risk, restart/reboot checks, consistent backups/restores, storage monitoring, and rollback that preserves listing and monitoring data.
+- [ ] **Unit 5: Observable verification**
+  - [ ] Run full unit/integration suite, image build, Compose validation, Prometheus configuration validation, and selected plugin/datasource integration checks.
+  - [ ] Exercise a synthetic multi-run stack: new/repeated listings, injected failures/retries, exporter downtime/restart, snapshot publication failure, and container recreation retaining all state.
+  - [ ] Verify LAN and Tailscale access/login, no anonymous access, no exposed internal services, mini-PC boot recovery, and existing timer behavior on the deployment target; document checks not yet performed rather than claiming completion.
+
+## 4. Verification Criteria
+*Task is complete only when verified by an observable signal.*
+* **Build Command:** existing image build plus any explicitly added monitoring-image build; Compose configuration and Prometheus config validation against pinned binaries.
+* **Test Command:** existing full test command defined in [AGENTS.md](AGENTS.md), extended with synthetic monitoring tests and container integration verification.
+* **Expected Observable Behavior:**
+  - Two synthetic runs with one repeated ID produce correct unique-discovery and total-observation counts on their respective dates, unchanged listing schema/export columns, and no duplicate historical imports.
+  - Dashboard date/city/price filters match independently computed fixture counts. Calendar boundaries use Asia/Karachi. Legacy estimates are labeled and unavailable history is not fabricated.
+  - Injected recovered retry increases unsuccessful-attempt/retry counters without a final-fetch failure; exhausted fetch increases both appropriate failure counters. Histogram count/sum/buckets match measured fixtures and dashboard P50/P99 are validated within bucket accuracy, with sample counts visible.
+  - Performance survives job/exporter/container restarts without double counting; no-data/unfinished/partial-failure states are truthful. Grafana and Prometheus downtime does not prevent successful listing ingestion.
+  - Grafana queries an integrity-checked snapshot, refreshes after replacement, cannot write listing/monitoring data, and remains on the last good snapshot if publication fails with visible stale/error status.
+  - Persistent services return after reboot/recreation. Only authenticated Grafana is reachable through approved LAN/Tailscale endpoints; no public or internal-service host exposure. Configured credentials are absent from tracked assets/logs.
+  - Retention is visibly configured for 90 days and a 2 GiB adjustable size cap, with indefinite monitoring business history and data-preserving rollback documented.
+
+## 5. Compatibility
+- Preserve existing public APIs and CLI defaults where possible; new monitoring options are additive. Maintain listing schema, upsert semantics, seller-name behavior, export ordering, delays, retries, and pagination rules.
+- No browsing/querying of production data during tests; synthetic data only. No production database files, exports, secrets, or private keys committed or embedded in images.
+- Implementation may check off this specification, write blockers/learnings, and modify directly scoped application/deployment/user documentation only; operational guidance ownership remains unchanged.
+- No implementation begins until the developer explicitly approves this completed specification.

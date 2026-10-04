@@ -144,7 +144,8 @@ Other actions in the same family with similar concerns as of 2026-08:
 
 - **Destination:** `SKILL`
 - **Priority:** Medium
-- **Status:** PENDING
+- **Status:** ACCEPTED
+- **Evaluation (2026-10-04):** Promoted runtime-validation and selected-release verification guidance into [.agents/skills/github-actions.md](../../.agents/skills/github-actions.md). Rejected blind latest-major/default-branch selection as a durable rule; selected releases and breaking changes must be verified instead. Historical upstream defect/version statements are not current guarantees.
 - **Suggested Target:** new skill file `.agents/skills/github-actions.md` (does not yet exist)
 
 #### Suggestion
@@ -179,7 +180,8 @@ this the same way I did.
 
 - **Destination:** `SPECS`
 - **Priority:** High
-- **Status:** PENDING
+- **Status:** ACCEPTED
+- **Evaluation (2026-10-04):** Reconciled the historical release verification gate in [SPECS.md](../../SPECS.md) with an explicit static-versus-hosted-runtime clarification, without claiming new historical verification or mandating blind latest-major upgrades.
 - **Suggested Target:** `SPECS.md` Release 1.0.0 spec, Unit 6 (CI/CD workflow) — Verification section
 
 #### Suggestion

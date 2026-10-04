@@ -66,6 +66,7 @@ The following are examples; the evolver can create any skill it deems necessary.
 * **Database & Migrations:** `.agents/skills/database.md` [Populate path when created]
 * **Testing & Verification:** `.agents/skills/testing.md` [Populate path when created]
 * **OLX Pakistan Scraping:** `.agents/skills/olx-scraping.md` — site HTML structure, URL scheme, pagination, price/time parsing
+* **GitHub Actions Verification:** [.agents/skills/github-actions.md](.agents/skills/github-actions.md) — selected-release input checks, static/runtime evidence, and artifact publication
 
 If a skill file is missing, continue using AGENTS.md alone and report the missing skill.
 
@@ -129,7 +130,6 @@ Implementation sessions map their completion to these exit codes; Repository Evo
 - Never commit secrets.
 - Never invent credentials.
 - Never disable security checks merely to satisfy tests
-
 
 
 

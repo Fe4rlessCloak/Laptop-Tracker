@@ -25,3 +25,4 @@ data/
 #Secrets
 .env
 .commandcode
+.roo
