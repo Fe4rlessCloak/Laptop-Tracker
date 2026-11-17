@@ -12,12 +12,31 @@ The runner ties together the fetcher, parsers, and storage:
 
 from __future__ import annotations
 
+import os
+import sys
 import time
-from datetime import date, datetime
-from typing import Dict, List, Optional
+import uuid
+from datetime import date, datetime, timezone
+from typing import Any, Callable, Dict, List, Optional
 
 from scraper import config
 from scraper.fetcher import Fetcher, FetchError
+from scraper.monitoring import (
+    OUTCOME_FAILED,
+    OUTCOME_STORED,
+    PAGE_TYPE_DETAIL,
+    PAGE_TYPE_SEARCH,
+    RUN_COMPLETED,
+    RUN_COMPLETED_WITH_FETCH_ERRORS,
+    RUN_FAILED,
+    SOURCE_LIVE,
+    connect as mon_connect,
+    finish_run,
+    record_discovery,
+    record_observation,
+    record_request_event,
+    start_run,
+)
 from scraper.parsers import is_within_hours, parse_item_detail, parse_search_results
 from scraper.storage import (
     connect,
@@ -67,6 +86,30 @@ class RunSummary:
         )
 
 
+def _resolve_monitoring_db_path(
+    db_path: str, monitoring_db_path: Optional[str]
+) -> Optional[str]:
+    """Resolve the monitoring DB path without touching production data in tests."""
+    if monitoring_db_path == "":
+        return None
+    if monitoring_db_path is not None:
+        return monitoring_db_path
+    if db_path == config.DEFAULT_DB_PATH:
+        return config.DEFAULT_MONITORING_DB_PATH
+    return os.path.join(
+        os.path.dirname(os.path.abspath(db_path)), "monitoring.db"
+    )
+
+
+def _safe_mon_call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Invoke a monitoring write safely; log warnings without breaking scrapes."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        print(f"[monitoring] warning: {exc}", file=sys.stderr)
+        return None
+
+
 def run(
     cities: Optional[Dict[str, str]] = None,
     hours: int = config.DEFAULT_HOURS,
@@ -76,14 +119,51 @@ def run(
     delay: float = config.DEFAULT_DELAY,
     category: str = "laptops",
     fetcher: Optional[Fetcher] = None,
+    monitoring_db_path: Optional[str] = None,
 ) -> RunSummary:
     """Execute a full scrape run and return a summary."""
     cities = cities or config.DEFAULT_CITIES
     export = export or []
     fetcher = fetcher or Fetcher(delay=delay)
     summary = RunSummary()
+    run_t0 = time.monotonic()
 
     conn = connect(db_path)
+    resolved_mon_path = _resolve_monitoring_db_path(db_path, monitoring_db_path)
+    mon_conn = None
+    run_id: Optional[str] = None
+    if resolved_mon_path is not None:
+        mon_conn = _safe_mon_call(mon_connect, resolved_mon_path)
+        if mon_conn is not None:
+            run_id = _safe_mon_call(
+                start_run,
+                mon_conn,
+                run_id=f"run-{datetime.now(timezone.utc).isoformat()}-{uuid.uuid4().hex[:8]}",
+            )
+
+    has_on_attempt = hasattr(fetcher, "on_attempt")
+    has_ctx = hasattr(fetcher, "set_attempt_context")
+    previous_on_attempt = getattr(fetcher, "on_attempt", None) if has_on_attempt else None
+
+    def _on_attempt(event: Dict[str, Any]) -> None:
+        if mon_conn is None or not event.get("page_type"):
+            return
+        _safe_mon_call(
+            record_request_event,
+            mon_conn,
+            run_id=run_id,
+            page_type=event["page_type"],
+            city=event.get("city"),
+            attempt_number=event["attempt_number"],
+            status_code=event.get("status_code"),
+            outcome=event["outcome"],
+            is_final=bool(event.get("is_final")),
+            duration_ms=event["duration_ms"],
+            recorded_at=event.get("recorded_at"),
+        )
+
+    if has_on_attempt:
+        fetcher.on_attempt = _on_attempt
 
     try:
         for city, city_slug in cities.items():
@@ -95,6 +175,10 @@ def run(
             # ads are absent from later pages — stopping early would miss them.
             for page in range(1, config.MAX_PAGES + 1):
                 url = build_search_url(city_slug, page, category=category)
+                if has_ctx:
+                    fetcher.set_attempt_context(
+                        page_type=PAGE_TYPE_SEARCH, city=city
+                    )
                 try:
                     html = fetcher.get(url)
                 except FetchError as exc:
@@ -117,6 +201,10 @@ def run(
                     break
 
                 for listing in kept:
+                    if has_ctx:
+                        fetcher.set_attempt_context(
+                            page_type=PAGE_TYPE_DETAIL, city=city
+                        )
                     try:
                         detail_html = fetcher.get(listing["item_url"])
                         listing = parse_item_detail(detail_html, listing)
@@ -129,7 +217,47 @@ def run(
                     finally:
                         fetcher.sleep_between()
 
-                    is_new = upsert_listing(conn, listing)
+                    encounter_ts = (
+                        listing.get("scraped_at")
+                        or datetime.now(timezone.utc).isoformat()
+                    )
+                    item_id = listing.get("item_id")
+                    try:
+                        is_new = upsert_listing(conn, listing)
+                    except Exception:
+                        summary.errors += 1
+                        if mon_conn is not None and item_id:
+                            _safe_mon_call(
+                                record_observation,
+                                mon_conn,
+                                str(item_id),
+                                encounter_ts,
+                                outcome=OUTCOME_FAILED,
+                                source=SOURCE_LIVE,
+                                run_id=run_id,
+                                city=city,
+                            )
+                        raise
+
+                    if mon_conn is not None and item_id:
+                        _safe_mon_call(
+                            record_discovery,
+                            mon_conn,
+                            str(item_id),
+                            encounter_ts,
+                            source=SOURCE_LIVE,
+                        )
+                        _safe_mon_call(
+                            record_observation,
+                            mon_conn,
+                            str(item_id),
+                            encounter_ts,
+                            outcome=OUTCOME_STORED,
+                            source=SOURCE_LIVE,
+                            run_id=run_id,
+                            city=city,
+                        )
+
                     ts = datetime.now().strftime("%H:%M:%S")
                     if is_new:
                         summary.new += 1
@@ -146,7 +274,50 @@ def run(
             path = f"{export_dir}/listings-{today}.json"
             export_json(fetch_all(conn), path)
             print(f"Exported JSON -> {path}")
+
+        if mon_conn is not None and run_id is not None:
+            run_outcome = (
+                RUN_COMPLETED_WITH_FETCH_ERRORS
+                if summary.errors > 0
+                else RUN_COMPLETED
+            )
+            _safe_mon_call(
+                finish_run,
+                mon_conn,
+                run_id,
+                outcome=run_outcome,
+                duration_ms=(time.monotonic() - run_t0) * 1000.0,
+                listings_seen=summary.fetched,
+                new_count=summary.new,
+                stored_count=summary.new + summary.updated,
+                repeat_count=summary.updated,
+                skipped_count=summary.skipped,
+                error_count=summary.errors,
+            )
+    except Exception:
+        if mon_conn is not None and run_id is not None:
+            _safe_mon_call(
+                finish_run,
+                mon_conn,
+                run_id,
+                outcome=RUN_FAILED,
+                duration_ms=(time.monotonic() - run_t0) * 1000.0,
+                listings_seen=summary.fetched,
+                new_count=summary.new,
+                stored_count=summary.new + summary.updated,
+                repeat_count=summary.updated,
+                skipped_count=summary.skipped,
+                error_count=summary.errors,
+            )
+        raise
     finally:
+        if has_on_attempt:
+            fetcher.on_attempt = previous_on_attempt
+        if mon_conn is not None:
+            try:
+                mon_conn.close()
+            except Exception:
+                pass
         conn.close()
 
     return summary

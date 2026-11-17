@@ -47,6 +47,13 @@ uv run python -m scraper --hours 12 --export json
 
 # Custom database path and request delay
 uv run python -m scraper --db data/olx.db --delay 3
+
+# Run the read-only Web UI locally (http://127.0.0.1:8000)
+uv run python -m scraper.web
+
+# Import historical daily exports into monitoring.db (explicit operator action)
+uv run python -m scraper.monitoring --db data/monitoring.db import data/listings-2026-10-04.json
+uv run python -m scraper.monitoring --db data/monitoring.db stats
 ```
 
 ### CLI flags
@@ -57,8 +64,15 @@ uv run python -m scraper --db data/olx.db --delay 3
 | `--hours` | `24` | Look-back window in hours |
 | `--export` | *(none)* | Export formats: `csv`, `json`, or both |
 | `--db` | `data/olx.db` | Path to the SQLite database |
+| `--monitoring-db` | `data/monitoring.db` (or alongside `--db`) | Path to the isolated monitoring SQLite database |
 | `--delay` | `2.0` | Delay in seconds between requests |
 | `--category` | `laptops` | OLX category to scrape (keys in `scraper/config.py` `CATEGORIES`) |
+
+### Web Reporting UI
+
+- **Listings (`/`):** Defaults to laptops first discovered today (`Asia/Karachi`), with toggles for *Seen today* and *All listings*, keyword search across title/description, city filter, PKR min/max price filter, discovery date range, sorting, and OLX links.
+- **Performance (`/performance`):** Shows request counts, Average latency, P50, P95, **P99 (slowest 1%)**, **P99.9 (slowest 0.1%)**, attempt/final failure rates, retries, and run history (including crashed/incomplete runs).
+- Reads `olx.db` and `monitoring.db` strictly read-only (`?mode=ro` + `PRAGMA query_only = ON`). See [TECH_DEBT.md](TECH_DEBT.md) `[DEBT-003]` for the intentional unauthenticated private-LAN/Tailscale HTTP compromise.
 
 ## Production (Docker on Ubuntu mini PC)
 
@@ -120,7 +134,7 @@ for the known-fragility note on this selector.
 uv run --extra dev pytest
 ```
 
-41 tests cover the storage layer, HTML parsers, fetcher, and runner end-to-end.
+The test suite covers the storage layer, HTML parsers, fetcher + attempt telemetry, runner + monitoring integration, isolated monitoring model, and read-only Web UI.
 
 ## Project structure
 
@@ -128,15 +142,17 @@ uv run --extra dev pytest
 scraper/
   config.py     Central configuration (cities, time window, delay, URLs)
   storage.py    SQLite schema, upsert logic, CSV/JSON export
-  fetcher.py    Polite HTTP client (User-Agent, delay, retry/backoff)
+  monitoring.py Isolated monitoring DB, archive import, latency & run telemetry
+  web.py        Read-only FastAPI Web UI (listings search + performance stats)
+  fetcher.py    Polite HTTP client (User-Agent, delay, retry/backoff, telemetry)
   parsers.py    HTML parsing, price normalization, relative-time parsing, seller name
-  runner.py     Orchestrates fetch → filter → enrich → upsert → export
+  runner.py     Orchestrates fetch → filter → enrich → upsert → monitoring → export
   cli.py        Command-line entry point
-tests/          Unit + integration tests (41 tests)
+tests/          Unit + integration tests
 SPECS.md        Active specification
-TECH_DEBT.md    Intentional compromises (e.g. seller_name selector fragility)
+TECH_DEBT.md    Intentional compromises (seller selector, tz fallback, no-auth LAN UI)
 Dockerfile      Image build for the release artifact
-docker-compose.yml  Local + production one-shot runner
+docker-compose.yml  Web UI service + manual scraper runner sharing laptop-tracker-data
 .github/workflows/release.yml  CI/CD: tests → build → push to ghcr.io
 deploy/         Ubuntu mini PC systemd unit files + setup guide
 ```

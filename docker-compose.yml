@@ -1,17 +1,16 @@
-# docker-compose for the OLX Pakistan laptop scraper.
+# docker-compose for the OLX Pakistan laptop scraper and read-only Web UI.
 #
-# This file is a thin wrapper around ``docker run`` for local convenience
-# and as the deployment contract for the systemd timer (Unit 7). Every
-# meaningful setting here maps 1:1 to a ``docker run`` flag.
-#
-# Volume: ``laptop-tracker-data`` is a NAMED VOLUME — it persists on the
-# host between container invocations. The SQLite DB (``olx.db``) and the
-# dated CSV/JSON exports all live inside it. A ``docker volume inspect
-# laptop-tracker-data`` on the Ubuntu box shows the on-disk path.
+# Volume: ``laptop-tracker-data`` uses an explicit literal name so Compose and
+# the Ubuntu systemd timer (deploy/systemd/olx-scraper.service) share the exact
+# same host volume instead of creating a project-prefixed copy.
 #
 # Typical usage:
+#   # Start the persistent read-only Web UI (binds 127.0.0.1:8000 by default;
+#   # set WEB_BIND_HOST in .env to your LAN or Tailscale IP on the mini PC):
+#   docker compose up -d
+#
+#   # Run a one-shot scrape manually:
 #   docker compose run --rm scraper --hours 24 --export csv json
-#   docker compose run --rm scraper --cities islamabad --hours 12
 
 services:
   scraper:
@@ -20,14 +19,46 @@ services:
     # on the next scheduled run.
     image: ghcr.io/fe4rlesscloak/laptop-tracker:latest
     pull_policy: always
+    profiles: ["scraper"]
     # Default command; override per-invocation (see ``Typical usage`` above).
     command: ["--hours", "24", "--export", "csv", "json"]
     volumes:
       - laptop-tracker-data:/app/data
 
+  web:
+    # Reuses the same published image with the read-only Web UI entrypoint.
+    image: ghcr.io/fe4rlesscloak/laptop-tracker:latest
+    pull_policy: always
+    entrypoint: ["python", "-m", "scraper.web"]
+    command:
+      [
+        "--host", "0.0.0.0",
+        "--port", "8000",
+        "--db", "/app/data/olx.db",
+        "--monitoring-db", "/app/data/monitoring.db",
+      ]
+    ports:
+      # Safe loopback default — set WEB_BIND_HOST to your private LAN or
+      # Tailscale IP (never wildcard 0.0.0.0 on an untrusted network).
+      - "${WEB_BIND_HOST:-127.0.0.1}:${WEB_PORT:-8000}:8000"
+    volumes:
+      - laptop-tracker-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   laptop-tracker-data:
-    # Named volume managed by Docker. Survives container restarts and
-    # explicit ``docker compose down`` (use ``docker compose down -v`` to
-    # destroy it). The systemd service on the Ubuntu box depends on this
-    # name — do not rename it without updating deploy/systemd/*.service.
+    name: laptop-tracker-data
+    # Literal named volume shared with deploy/systemd/olx-scraper.service.
+    # Survives container restarts and ``docker compose down``.

@@ -82,3 +82,41 @@ Synthetic tests cover local midnight with and without timezone data for supporte
 - **Resolved By:**
 - **Resolved On:**
 - **Notes:**
+
+---
+
+## [DEBT-003] – Unauthenticated HTTP Web UI on private LAN/Tailscale
+
+- **Date Added:** 2026-11-17
+- **Status:** OPEN
+- **File Location:** `scraper/web.py`, `docker-compose.yml` (to be implemented in Units 3–4)
+- **Spec Reference:** [SPECS.md](SPECS.md) — Persistent Monitoring and Web Reporting UI (Option A)
+- **Introduced By:** Explicit developer approval during Option A Evolution interview on 2026-11-17.
+
+### Compromise
+
+The read-only Web UI serves over plain HTTP without user login/authentication for this initial release, relying on explicit private LAN / Tailscale bind addresses and strictly read-only SQLite access.
+
+### Justification
+
+All data exposed is public OLX listing data and scraper latency statistics with no write endpoints or secrets, matching the operator's existing private mini-PC services and avoiding unnecessary auth/TLS setup in v1.
+
+### Impact
+
+- Anyone on the trusted LAN (or Tailscale tailnet) who can reach the bound port can browse scraped listings and scraper performance metrics, and LAN traffic is unencrypted over HTTP.
+- Cannot safely be exposed to untrusted networks or the public internet without adding authentication and TLS.
+
+### Remediation
+
+Add authentication (e.g., Basic Auth / session login via runtime secret file) and/or TLS (or Tailscale-only bind / reverse proxy) before exposing the UI beyond trusted private devices.
+
+### Verification
+
+- Compose configuration binds only to explicit private address(es) (no default wildcard `0.0.0.0` host publish).
+- Web UI exposes read-only routes only and enforces `PRAGMA query_only = ON` on all database connections.
+
+### Resolution
+
+- **Resolved By:**
+- **Resolved On:**
+- **Notes:**

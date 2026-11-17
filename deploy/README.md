@@ -253,15 +253,78 @@ sudo docker run --rm -v laptop-tracker-data:/data alpine ls -la /data
 ## Monitoring Database & Timezone Notes
 
 - Monitoring history (`data/monitoring.db`) is kept separate from `olx.db`.
-  Operators can import retained daily exports explicitly via
-  `python -m scraper.monitoring --db data/monitoring.db import <path>` and
-  inspect totals with `stats`.
+  Operators can import retained daily exports explicitly via:
+  ```bash
+  sudo docker compose run --rm --entrypoint python scraper -m scraper.monitoring \
+      --db /app/data/monitoring.db import /app/data/listings-2026-10-04.json
+  sudo docker compose run --rm --entrypoint python scraper -m scraper.monitoring \
+      --db /app/data/monitoring.db stats
+  ```
 - Reporting calendar dates use `Asia/Karachi` via system `zoneinfo` when
   available and fall back to a fixed `UTC+05:00` offset when timezone data is
   absent (such as in minimal container images). That fallback is accurate for
   post-2009 dates without DST, but **older pre-2009 daylight-saving dates or
   future Pakistan clock-rule changes require packaged `tzdata`** (see
   `TECH_DEBT.md` `DEBT-002`).
+
+---
+
+## Persistent Web UI (`docker-compose.yml`)
+
+The `web` service in `docker-compose.yml` reuses `ghcr.io/fe4rlesscloak/laptop-tracker:latest`
+and mounts the exact same `laptop-tracker-data` volume alongside `olx-scraper.service`.
+If the Web UI container is stopped, the systemd scraper timer continues running normally.
+
+### 1. Configure private binding (LAN / Tailscale)
+
+By default, `docker-compose.yml` binds `127.0.0.1:8000`. Create a `.env` file
+next to `docker-compose.yml` on the Ubuntu box (never commit `.env`) with your
+Tailscale IP (preferred) or trusted LAN IP:
+
+```ini
+WEB_BIND_HOST=100.x.y.z
+WEB_PORT=8000
+```
+
+Start and verify:
+
+```bash
+sudo docker compose up -d
+sudo docker compose ps
+curl -fsS http://${WEB_BIND_HOST}:8000/health
+```
+
+### 2. Security & Firewall Rules (`DEBT-003`)
+
+- The Web UI is **read-only** (`?mode=ro` + `PRAGMA query_only = ON`) with **no login**
+  and **plain HTTP** in this release (`TECH_DEBT.md` `DEBT-003`).
+- **Do not** set `WEB_BIND_HOST=0.0.0.0`, and **do not** forward port `8000` on
+  your router.
+- Prefer your **Tailscale** IP over a shared LAN IP when possible so traffic
+  is encrypted end-to-end by WireGuard.
+- If using `ufw` on Ubuntu, verify Docker's `DOCKER-USER` iptables chain does
+  not expose port `8000` on public/WAN interfaces (`sudo ufw status verbose`
+  and `sudo iptables -L DOCKER-USER -v -n`).
+
+### 3. Backups, Disk Growth & Data-Preserving Rollback
+
+- `olx.db` and `monitoring.db` grow slowly (typically tens of MB per year).
+  Check volume usage with:
+  ```bash
+  sudo docker system df -v | grep laptop-tracker-data
+  ```
+- Create consistent SQLite backups without stopping the Web UI (requires `sqlite3`
+  on the host against the volume mountpoint):
+  ```bash
+  MOUNT=$(sudo docker volume inspect laptop-tracker-data --format '{{ .Mountpoint }}')
+  sudo sqlite3 "$MOUNT/olx.db" ".backup '/tmp/olx-backup.db'"
+  sudo sqlite3 "$MOUNT/monitoring.db" ".backup '/tmp/monitoring-backup.db'"
+  ```
+- **Rollback:** Pin a specific image tag (e.g. `:v1.0.0` or `:sha-<short>`) in
+  both `olx-scraper.service` and `docker-compose.yml`, then run
+  `sudo docker compose up -d`. Never pass `-v` to `docker compose down` during
+  rollback—removing `-v` preserves `laptop-tracker-data` (`olx.db` and
+  `monitoring.db`).
 
 
 If the volume exists but `/data` is empty, the container exited before

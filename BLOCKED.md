@@ -42,3 +42,41 @@ An available tool successfully retrieves the repository's open GitHub Issues, in
 - **Resolved By:** Repository Evolution session
 - **Resolved On:** 2026-10-04 12:16 UTC
 - **Notes:** The existing GitHub integration successfully listed open issues for Fe4rlessCloak/Laptop-Tracker and returned an empty list. Issue intake is complete; no CLI or browser installation is required for planning.
+
+---
+
+## [BLOCKER-002] – Local Docker daemon (OrbStack) not running for image build and container verification
+
+- **Date Halted:** 2026-11-17 12:26 UTC
+- **Status:** RESOLVED
+- **Active Spec:** [SPECS.md](SPECS.md) — Units 4–5 (image verification & synthetic container integration)
+- **Affected Task:** `docker build -t laptop-tracker:dev .` and synthetic multi-run container verification in Unit 5
+
+### Summary
+
+Units 2–3 and the Compose/documentation edits for Unit 4 are implemented and verified with `pytest` and `docker compose config`. Building `laptop-tracker:dev` and verifying `python -m scraper.web` inside a live container cannot proceed because the local Docker daemon (OrbStack) is stopped.
+
+### Observable Error
+
+```text
+ERROR: failed to connect to the docker API at unix:///Users/abdullah/.orbstack/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /Users/abdullah/.orbstack/run/docker.sock: connect: no such file or directory
+```
+
+### Root Cause
+
+OrbStack / Docker Engine is not currently running on the developer's Mac.
+
+### Required Action
+
+Start OrbStack (Docker daemon) locally, then run `docker build -t laptop-tracker:dev .` and execute the synthetic container verification (and operator mini-PC checks once deployed).
+
+### Verification
+
+- `docker build -t laptop-tracker:dev .` exits `0`.
+- `python -m scraper.web` serves `/health` and read-only SQLite endpoints inside the container sharing `laptop-tracker-data` with one-shot scraper runs.
+
+### Resolution
+
+- **Resolved By:** Implementation session (after user started OrbStack)
+- **Resolved On:** 2026-11-17 12:31 UTC
+- **Notes:** `docker build -t laptop-tracker:dev .` succeeded, both entrypoints (`python -m scraper --help` and `python -m scraper.web --help`) passed, and synthetic multi-run + container-recreation verification passed against an isolated Docker volume.

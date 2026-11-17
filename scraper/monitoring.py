@@ -39,16 +39,18 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from scraper import config
 
 # Bumped whenever the monitoring schema changes so an operator can tell which
 # shape a database is in. Stored in the ``schema_meta`` table.
-MONITORING_SCHEMA_VERSION = "1"
+MONITORING_SCHEMA_VERSION = "2"
 
 # Reporting calendar timezone. Pakistan has observed no DST since 2009, so a
 # fixed +05:00 offset matches ``Asia/Karachi`` for current supported dates. We
@@ -89,6 +91,22 @@ VALID_DISCOVERY_SOURCES = (SOURCE_LIVE, SOURCE_ARCHIVE, SOURCE_UNKNOWN)
 RUN_COMPLETED = "completed"
 RUN_COMPLETED_WITH_FETCH_ERRORS = "completed-with-fetch-errors"
 RUN_FAILED = "failed"
+
+# HTTP attempt telemetry bounds.
+PAGE_TYPE_SEARCH = "search"
+PAGE_TYPE_DETAIL = "detail"
+VALID_PAGE_TYPES = (PAGE_TYPE_SEARCH, PAGE_TYPE_DETAIL)
+
+ATTEMPT_OK = "ok"
+ATTEMPT_TRANSIENT_HTTP = "transient_http"
+ATTEMPT_HTTP_ERROR = "http_error"
+ATTEMPT_REQUEST_ERROR = "request_error"
+VALID_ATTEMPT_OUTCOMES = (
+    ATTEMPT_OK,
+    ATTEMPT_TRANSIENT_HTTP,
+    ATTEMPT_HTTP_ERROR,
+    ATTEMPT_REQUEST_ERROR,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +179,18 @@ def connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def open_readonly_db(path: str, *, timeout: float = 5.0) -> sqlite3.Connection:
+    """Open an existing SQLite database strictly read-only.
+
+    Never creates or migrates schema and enforces ``PRAGMA query_only = ON``.
+    """
+    uri = Path(path).resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=timeout)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
 def _create_schema(conn: sqlite3.Connection) -> None:
     """Create the monitoring tables if they do not already exist."""
     conn.executescript(
@@ -197,6 +227,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             started_date  TEXT NOT NULL,
             completed_at  TEXT,                    -- NULL while running / abandoned
             outcome       TEXT,                    -- NULL until finished
+            duration_ms   REAL,                    -- monotonic total run duration
             listings_seen INTEGER NOT NULL DEFAULT 0,
             new_count     INTEGER NOT NULL DEFAULT 0,
             stored_count  INTEGER NOT NULL DEFAULT 0,
@@ -204,6 +235,24 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             skipped_count INTEGER NOT NULL DEFAULT 0,
             error_count   INTEGER NOT NULL DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS request_events (
+            event_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id         TEXT,
+            recorded_at    TEXT NOT NULL,          -- UTC ISO-8601
+            recorded_date  TEXT NOT NULL,          -- Asia/Karachi calendar date
+            page_type      TEXT NOT NULL,          -- search | detail
+            city           TEXT,
+            attempt_number INTEGER NOT NULL,       -- 1-based attempt index
+            status_code    INTEGER,                -- NULL on network/request error
+            outcome        TEXT NOT NULL,          -- ok | transient_http | http_error | request_error
+            is_final       INTEGER NOT NULL DEFAULT 0,
+            duration_ms    REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_request_events_recorded
+            ON request_events(recorded_at);
+        CREATE INDEX IF NOT EXISTS idx_request_events_run
+            ON request_events(run_id);
 
         CREATE TABLE IF NOT EXISTS archive_imports (
             import_id     TEXT PRIMARY KEY,
@@ -253,6 +302,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     :mod:`scraper.storage` and is never modified by this module.
     """
     _ensure_column(conn, "discoveries", "discovered_date", "TEXT")
+    _ensure_column(conn, "runs", "duration_ms", "REAL")
     conn.execute(
         "INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -482,6 +532,7 @@ def finish_run(
     *,
     outcome: str,
     completed_at: Optional[str] = None,
+    duration_ms: Optional[float] = None,
     listings_seen: Optional[int] = None,
     new_count: Optional[int] = None,
     stored_count: Optional[int] = None,
@@ -494,6 +545,8 @@ def finish_run(
         "completed_at": _normalize_timestamp(completed_at) or _utcnow_iso(),
         "outcome": outcome,
     }
+    if duration_ms is not None:
+        values["duration_ms"] = float(duration_ms)
     for column, value in (
         ("listings_seen", listings_seen),
         ("new_count", new_count),
@@ -528,6 +581,278 @@ def list_incomplete_runs(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
         """
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Per-attempt HTTP latency & failure telemetry
+# ---------------------------------------------------------------------------
+
+
+def record_request_event(
+    conn: sqlite3.Connection,
+    *,
+    page_type: str,
+    outcome: str,
+    duration_ms: float,
+    attempt_number: int = 1,
+    is_final: bool = True,
+    status_code: Optional[int] = None,
+    city: Optional[str] = None,
+    run_id: Optional[str] = None,
+    recorded_at: Optional[str] = None,
+) -> int:
+    """Persist one HTTP request attempt for latency and failure reporting.
+
+    Each row is committed immediately so completed request work survives abrupt
+    process termination. Excludes politeness sleeps and retry backoffs.
+    """
+    if page_type not in VALID_PAGE_TYPES:
+        raise ValueError(
+            f"Invalid page_type {page_type!r}; expected one of {VALID_PAGE_TYPES}"
+        )
+    if outcome not in VALID_ATTEMPT_OUTCOMES:
+        raise ValueError(
+            f"Invalid attempt outcome {outcome!r}; "
+            f"expected one of {VALID_ATTEMPT_OUTCOMES}"
+        )
+    if attempt_number < 1:
+        raise ValueError("attempt_number must be >= 1")
+    if duration_ms < 0:
+        raise ValueError("duration_ms must be >= 0")
+
+    recorded = _normalize_timestamp(recorded_at) or _utcnow_iso()
+    recorded_date = to_karachi_date(recorded)
+    cursor = conn.execute(
+        """
+        INSERT INTO request_events
+            (run_id, recorded_at, recorded_date, page_type, city,
+             attempt_number, status_code, outcome, is_final, duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            recorded,
+            recorded_date,
+            page_type,
+            city,
+            int(attempt_number),
+            int(status_code) if status_code is not None else None,
+            outcome,
+            1 if is_final else 0,
+            float(duration_ms),
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def compute_percentile(
+    sorted_values: List[float], quantile: float
+) -> Optional[float]:
+    """Compute an exact linear-interpolated percentile over sorted values.
+
+    ``quantile`` is in ``[0.0, 1.0]`` (e.g. ``0.99`` for P99 / slowest 1%,
+    ``0.999`` for P99.9 / slowest 0.1%). Returns ``None`` when empty.
+    """
+    n = len(sorted_values)
+    if n == 0:
+        return None
+    if n == 1:
+        return float(sorted_values[0])
+    pos = quantile * (n - 1)
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return float(sorted_values[lo])
+    frac = pos - lo
+    return float(sorted_values[lo] + frac * (sorted_values[hi] - sorted_values[lo]))
+
+
+def compute_latency_stats(durations_ms: List[float]) -> Dict[str, Any]:
+    """Return sample count, average, min/max, P50, P95, P99, and P99.9."""
+    if not durations_ms:
+        return {
+            "count": 0,
+            "avg_ms": None,
+            "min_ms": None,
+            "max_ms": None,
+            "p50_ms": None,
+            "p95_ms": None,
+            "p99_ms": None,
+            "p999_ms": None,
+        }
+    ordered = sorted(float(v) for v in durations_ms)
+    return {
+        "count": len(ordered),
+        "avg_ms": sum(ordered) / len(ordered),
+        "min_ms": ordered[0],
+        "max_ms": ordered[-1],
+        "p50_ms": compute_percentile(ordered, 0.50),
+        "p95_ms": compute_percentile(ordered, 0.95),
+        "p99_ms": compute_percentile(ordered, 0.99),
+        "p999_ms": compute_percentile(ordered, 0.999),
+    }
+
+
+def _summarize_attempt_rows(rows: List[sqlite3.Row]) -> Dict[str, Any]:
+    """Aggregate latency percentiles and attempt/final failure rates."""
+    durations = [float(r["duration_ms"]) for r in rows]
+    stats = compute_latency_stats(durations)
+    total_attempts = len(rows)
+    failed_attempts = sum(1 for r in rows if r["outcome"] != ATTEMPT_OK)
+    retries = sum(1 for r in rows if int(r["attempt_number"]) > 1)
+    final_rows = [r for r in rows if int(r["is_final"]) == 1]
+    logical_fetches = len(final_rows)
+    final_failures = sum(1 for r in final_rows if r["outcome"] != ATTEMPT_OK)
+
+    stats.update(
+        {
+            "total_attempts": total_attempts,
+            "failed_attempts": failed_attempts,
+            "attempt_failure_rate": (
+                failed_attempts / total_attempts if total_attempts else None
+            ),
+            "logical_fetches": logical_fetches,
+            "final_failures": final_failures,
+            "final_fetch_failure_rate": (
+                final_failures / logical_fetches if logical_fetches else None
+            ),
+            "retries": retries,
+        }
+    )
+    return stats
+
+
+VALID_PERFORMANCE_WINDOWS = ("last_run", "24h", "7d", "30d", "all")
+
+
+def get_performance_summary(
+    conn: sqlite3.Connection,
+    *,
+    window: str = "all",
+    now_utc: Optional[datetime] = None,
+    stale_hours: float = 26.0,
+    run_limit: int = 20,
+) -> Dict[str, Any]:
+    """Compute latency, failure/retry rates, and run health for a window."""
+    if window not in VALID_PERFORMANCE_WINDOWS:
+        raise ValueError(
+            f"Invalid window {window!r}; expected one of {VALID_PERFORMANCE_WINDOWS}"
+        )
+
+    now = now_utc.astimezone(timezone.utc) if now_utc else datetime.now(timezone.utc)
+
+    runs_rows = conn.execute(
+        """
+        SELECT run_id, started_at, started_date, completed_at, outcome,
+               duration_ms, listings_seen, new_count, stored_count,
+               repeat_count, skipped_count, error_count
+          FROM runs
+      ORDER BY started_at DESC, rowid DESC
+         LIMIT ?
+        """,
+        (int(run_limit),),
+    ).fetchall()
+    recent_runs = []
+    for row in runs_rows:
+        item = dict(row)
+        item["effective_outcome"] = item["outcome"] or "incomplete"
+        recent_runs.append(item)
+
+    latest_run = recent_runs[0] if recent_runs else None
+    latest_completed_row = conn.execute(
+        """
+        SELECT run_id, started_at, started_date, completed_at, outcome,
+               duration_ms, listings_seen, new_count, stored_count,
+               repeat_count, skipped_count, error_count
+          FROM runs
+         WHERE completed_at IS NOT NULL
+      ORDER BY completed_at DESC, rowid DESC
+         LIMIT 1
+        """
+    ).fetchone()
+    latest_completed_run = dict(latest_completed_row) if latest_completed_row else None
+
+    latest_success_row = conn.execute(
+        """
+        SELECT run_id, started_at, started_date, completed_at, outcome,
+               duration_ms, listings_seen, new_count, stored_count,
+               repeat_count, skipped_count, error_count
+          FROM runs
+         WHERE outcome = ?
+      ORDER BY completed_at DESC, rowid DESC
+         LIMIT 1
+        """,
+        (RUN_COMPLETED,),
+    ).fetchone()
+    latest_successful_run = dict(latest_success_row) if latest_success_row else None
+
+    hours_since_completed: Optional[float] = None
+    is_stale = False
+    if latest_completed_run is not None:
+        completed_dt = parse_timestamp(latest_completed_run["completed_at"])
+        if completed_dt is not None:
+            hours_since_completed = max(
+                0.0, (now - completed_dt).total_seconds() / 3600.0
+            )
+            is_stale = hours_since_completed > stale_hours
+
+    clauses: List[str] = []
+    params: List[Any] = []
+    selected_run_id: Optional[str] = None
+    if window == "last_run":
+        if latest_run is None:
+            event_rows: List[sqlite3.Row] = []
+        else:
+            selected_run_id = latest_run["run_id"]
+            clauses.append("run_id = ?")
+            params.append(selected_run_id)
+            event_rows = conn.execute(
+                "SELECT page_type, attempt_number, outcome, is_final, duration_ms "
+                "FROM request_events WHERE run_id = ?",
+                params,
+            ).fetchall()
+    else:
+        if window == "24h":
+            cutoff = (now - timedelta(hours=24)).isoformat()
+            clauses.append("recorded_at >= ?")
+            params.append(cutoff)
+        elif window == "7d":
+            cutoff = (now - timedelta(days=7)).isoformat()
+            clauses.append("recorded_at >= ?")
+            params.append(cutoff)
+        elif window == "30d":
+            cutoff = (now - timedelta(days=30)).isoformat()
+            clauses.append("recorded_at >= ?")
+            params.append(cutoff)
+
+        sql = (
+            "SELECT page_type, attempt_number, outcome, is_final, duration_ms "
+            "FROM request_events"
+        )
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        event_rows = conn.execute(sql, params).fetchall()
+
+    overall = _summarize_attempt_rows(event_rows)
+    by_page_type = {
+        pt: _summarize_attempt_rows([r for r in event_rows if r["page_type"] == pt])
+        for pt in VALID_PAGE_TYPES
+    }
+
+    return {
+        "window": window,
+        "selected_run_id": selected_run_id,
+        "overall": overall,
+        "by_page_type": by_page_type,
+        "recent_runs": recent_runs,
+        "latest_run": latest_run,
+        "latest_completed_run": latest_completed_run,
+        "latest_successful_run": latest_successful_run,
+        "hours_since_completed": hours_since_completed,
+        "stale_hours_threshold": stale_hours,
+        "is_stale": is_stale,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -6,12 +6,24 @@ capture, early-stop on duplicate, and early-stop on time-window exhaustion.
 """
 
 import os
+import sqlite3
 from datetime import date
 
 import pytest
 
 from scraper import config
 from scraper.fetcher import Fetcher
+from scraper.monitoring import (
+    OUTCOME_FAILED,
+    OUTCOME_STORED,
+    RUN_COMPLETED,
+    RUN_COMPLETED_WITH_FETCH_ERRORS,
+    RUN_FAILED,
+    connect as mon_connect,
+    count_observations,
+    count_unique_listings,
+    get_performance_summary,
+)
 from scraper.runner import build_search_url, run
 from scraper.storage import connect, count_listings, fetch_all
 
@@ -253,3 +265,127 @@ def test_build_search_url_round_trips_every_documented_category():
         assert config.CATEGORIES[category] in url
         assert "page=1" in url
         assert "sorting=desc-creation" in url
+
+
+def test_run_records_monitoring_telemetry_across_repeat_runs(tmp_path):
+    """Two runs with a repeated listing, a recovered detail retry, and an
+    exhausted detail fetch record exact discoveries, observations, runs, and
+    request_events without altering olx.db."""
+
+    class Resp:
+        def __init__(self, status_code, text=""):
+            self.status_code = status_code
+            self.text = text
+
+    class ScriptedSession:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.headers = {}
+
+        def get(self, url, timeout=None):
+            return self.responses.pop(0)
+
+    db_path = str(tmp_path / "olx.db")
+    mon_path = str(tmp_path / "monitoring.db")
+
+    # Run 1: page1 (1 fresh item iid-111), detail retries 503->200, page2 (old).
+    session1 = ScriptedSession(
+        [
+            Resp(200, PAGE1_HTML),
+            Resp(503, ""),
+            Resp(200, ITEM_HTML),
+            Resp(200, PAGE3_HTML),
+        ]
+    )
+    fetcher1 = Fetcher(delay=0, max_retries=2, backoff=0, session=session1)
+    s1 = run(
+        cities={"islamabad": "islamabad_g4060615"},
+        hours=24,
+        db_path=db_path,
+        monitoring_db_path=mon_path,
+        fetcher=fetcher1,
+    )
+    assert s1.new == 1
+    assert s1.errors == 0
+
+    # Run 2: same iid-111 appears again, detail fetch exhausts retries (404),
+    # partial listing is still stored, run finishes completed-with-fetch-errors.
+    session2 = ScriptedSession(
+        [
+            Resp(200, PAGE1_HTML),
+            Resp(404, ""),
+            Resp(200, PAGE3_HTML),
+        ]
+    )
+    fetcher2 = Fetcher(delay=0, max_retries=2, backoff=0, session=session2)
+    s2 = run(
+        cities={"islamabad": "islamabad_g4060615"},
+        hours=24,
+        db_path=db_path,
+        monitoring_db_path=mon_path,
+        fetcher=fetcher2,
+    )
+    assert s2.updated == 1
+    assert s2.errors == 1
+
+    mon = mon_connect(mon_path)
+    assert count_unique_listings(mon) == 1
+    assert count_observations(mon, outcome=OUTCOME_STORED) == 2
+
+    perf = get_performance_summary(mon, window="all")
+    assert len(perf["recent_runs"]) == 2
+    assert perf["recent_runs"][0]["outcome"] == RUN_COMPLETED_WITH_FETCH_ERRORS
+    assert perf["recent_runs"][1]["outcome"] == RUN_COMPLETED
+    assert perf["overall"]["total_attempts"] == 7
+    assert perf["overall"]["failed_attempts"] == 2
+    assert perf["overall"]["logical_fetches"] == 6
+    assert perf["overall"]["final_failures"] == 1
+    assert perf["overall"]["retries"] == 1
+    mon.close()
+
+
+def test_run_records_failed_observation_and_run_on_storage_error(
+    tmp_path, monkeypatch
+):
+    db_path = str(tmp_path / "olx.db")
+    mon_path = str(tmp_path / "monitoring.db")
+
+    def boom_upsert(_conn, _listing):
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr("scraper.runner.upsert_listing", boom_upsert)
+
+    with pytest.raises(sqlite3.OperationalError):
+        run(
+            cities={"islamabad": "islamabad_g4060615"},
+            hours=24,
+            db_path=db_path,
+            monitoring_db_path=mon_path,
+            fetcher=StubFetcher(),
+        )
+
+    mon = mon_connect(mon_path)
+    assert count_observations(mon, outcome=OUTCOME_FAILED) == 1
+    perf = get_performance_summary(mon, window="all")
+    assert perf["recent_runs"][0]["outcome"] == RUN_FAILED
+    mon.close()
+
+
+def test_monitoring_failure_does_not_abort_listing_ingestion(tmp_path):
+    db_path = str(tmp_path / "olx.db")
+    # Point monitoring_db_path at a file inside a path blocked by a regular file.
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("x", encoding="utf-8")
+    bad_mon_path = str(blocker / "monitoring.db")
+
+    summary = run(
+        cities={"islamabad": "islamabad_g4060615"},
+        hours=24,
+        db_path=db_path,
+        monitoring_db_path=bad_mon_path,
+        fetcher=StubFetcher(),
+    )
+    assert summary.new == 2
+    conn = connect(db_path)
+    assert count_listings(conn) == 2
+    conn.close()

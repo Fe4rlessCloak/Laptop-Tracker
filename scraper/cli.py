@@ -46,6 +46,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Path to the SQLite database (default: {config.DEFAULT_DB_PATH}).",
     )
     parser.add_argument(
+        "--monitoring-db",
+        default=None,
+        help=(
+            "Path to the monitoring SQLite database "
+            f"(default: {config.DEFAULT_MONITORING_DB_PATH} for default --db, "
+            "or monitoring.db alongside --db)."
+        ),
+    )
+    parser.add_argument(
         "--delay",
         type=float,
         default=config.DEFAULT_DELAY,
@@ -83,6 +92,7 @@ def main(argv=None) -> int:
         export=args.export,
         delay=args.delay,
         category=args.category,
+        monitoring_db_path=args.monitoring_db,
     )
     print(summary)
     return 0

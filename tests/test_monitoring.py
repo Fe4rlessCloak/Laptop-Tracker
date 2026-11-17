@@ -9,14 +9,26 @@ import sqlite3
 
 import pytest
 
+from datetime import datetime, timedelta, timezone
+
 from scraper.monitoring import (
+    ATTEMPT_HTTP_ERROR,
+    ATTEMPT_OK,
+    ATTEMPT_REQUEST_ERROR,
+    ATTEMPT_TRANSIENT_HTTP,
+    MONITORING_SCHEMA_VERSION,
     OUTCOME_FAILED,
     OUTCOME_STORED,
+    PAGE_TYPE_DETAIL,
+    PAGE_TYPE_SEARCH,
     PKT_FIXED_TZ,
     RUN_COMPLETED,
+    RUN_COMPLETED_WITH_FETCH_ERRORS,
     SOURCE_ARCHIVE,
     SOURCE_LIVE,
     SOURCE_UNKNOWN,
+    compute_latency_stats,
+    compute_percentile,
     connect,
     count_discoveries,
     count_observations,
@@ -24,14 +36,17 @@ from scraper.monitoring import (
     finish_run,
     get_counter,
     get_counters,
+    get_performance_summary,
     import_archive,
     increment_counter,
     list_incomplete_runs,
     main,
+    open_readonly_db,
     parse_timestamp,
     reconcile_archive_discovery,
     record_discovery,
     record_observation,
+    record_request_event,
     resolve_karachi_tz,
     start_run,
     to_karachi_date,
@@ -66,6 +81,7 @@ def test_connect_creates_monitoring_tables(db):
         "discoveries",
         "observations",
         "runs",
+        "request_events",
         "archive_imports",
         "counters",
         "schema_meta",
@@ -582,3 +598,177 @@ def test_cli_import_returns_zero(db, tmp_path):
         [{"item_id": "111", "scraped_at": "2026-08-30T10:00:00+00:00"}],
     )
     assert main(["--db", str(tmp_path / "m.db"), "import", path]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Request telemetry, exact percentiles, and read-only enforcement (Unit 2)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_percentile_and_latency_stats_exactness():
+    empty = compute_latency_stats([])
+    assert empty["count"] == 0
+    assert empty["avg_ms"] is None
+    assert empty["p99_ms"] is None
+    assert empty["p999_ms"] is None
+
+    single = compute_latency_stats([42.5])
+    assert single["count"] == 1
+    assert single["avg_ms"] == 42.5
+    assert single["p50_ms"] == 42.5
+    assert single["p99_ms"] == 42.5
+    assert single["p999_ms"] == 42.5
+
+    samples = [float(i) for i in range(1, 1001)]
+    stats = compute_latency_stats(samples)
+    assert stats["count"] == 1000
+    assert stats["avg_ms"] == pytest.approx(500.5)
+    assert stats["p50_ms"] == pytest.approx(500.5)
+    assert stats["p95_ms"] == pytest.approx(950.05)
+    assert stats["p99_ms"] == pytest.approx(990.01)
+    assert stats["p999_ms"] == pytest.approx(999.001)
+    assert compute_percentile([10.0, 20.0], 0.5) == pytest.approx(15.0)
+
+
+def test_request_event_validation(db):
+    with pytest.raises(ValueError):
+        record_request_event(db, page_type="bogus", outcome=ATTEMPT_OK, duration_ms=10.0)
+    with pytest.raises(ValueError):
+        record_request_event(db, page_type=PAGE_TYPE_SEARCH, outcome="bogus", duration_ms=10.0)
+    with pytest.raises(ValueError):
+        record_request_event(
+            db, page_type=PAGE_TYPE_SEARCH, outcome=ATTEMPT_OK, attempt_number=0, duration_ms=10.0
+        )
+    with pytest.raises(ValueError):
+        record_request_event(
+            db, page_type=PAGE_TYPE_SEARCH, outcome=ATTEMPT_OK, duration_ms=-1.0
+        )
+
+
+def test_performance_summary_retries_failures_windows_and_staleness(db):
+    now = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
+    # Run 1 (10 days ago): recovered retry on detail, plus an exhausted search.
+    start_run(db, run_id="run-old", started_at="2026-09-25T09:00:00+00:00")
+    record_request_event(
+        db,
+        run_id="run-old",
+        page_type=PAGE_TYPE_SEARCH,
+        city="islamabad",
+        attempt_number=1,
+        status_code=503,
+        outcome=ATTEMPT_TRANSIENT_HTTP,
+        is_final=False,
+        duration_ms=100.0,
+        recorded_at="2026-09-25T09:00:01+00:00",
+    )
+    record_request_event(
+        db,
+        run_id="run-old",
+        page_type=PAGE_TYPE_SEARCH,
+        city="islamabad",
+        attempt_number=2,
+        status_code=503,
+        outcome=ATTEMPT_TRANSIENT_HTTP,
+        is_final=True,
+        duration_ms=200.0,
+        recorded_at="2026-09-25T09:00:02+00:00",
+    )
+    finish_run(
+        db,
+        "run-old",
+        outcome=RUN_COMPLETED_WITH_FETCH_ERRORS,
+        completed_at="2026-09-25T09:01:00+00:00",
+        duration_ms=60000.0,
+        error_count=1,
+    )
+
+    # Run 2 (2 hours ago): recovered retry on detail + clean search.
+    start_run(db, run_id="run-new", started_at="2026-10-05T10:00:00+00:00")
+    record_request_event(
+        db,
+        run_id="run-new",
+        page_type=PAGE_TYPE_SEARCH,
+        city="islamabad",
+        attempt_number=1,
+        status_code=200,
+        outcome=ATTEMPT_OK,
+        is_final=True,
+        duration_ms=150.0,
+        recorded_at="2026-10-05T10:00:01+00:00",
+    )
+    record_request_event(
+        db,
+        run_id="run-new",
+        page_type=PAGE_TYPE_DETAIL,
+        city="islamabad",
+        attempt_number=1,
+        status_code=None,
+        outcome=ATTEMPT_REQUEST_ERROR,
+        is_final=False,
+        duration_ms=300.0,
+        recorded_at="2026-10-05T10:00:02+00:00",
+    )
+    record_request_event(
+        db,
+        run_id="run-new",
+        page_type=PAGE_TYPE_DETAIL,
+        city="islamabad",
+        attempt_number=2,
+        status_code=200,
+        outcome=ATTEMPT_OK,
+        is_final=True,
+        duration_ms=100.0,
+        recorded_at="2026-10-05T10:00:03+00:00",
+    )
+    finish_run(
+        db,
+        "run-new",
+        outcome=RUN_COMPLETED,
+        completed_at="2026-10-05T10:02:00+00:00",
+        duration_ms=120000.0,
+    )
+
+    last = get_performance_summary(db, window="last_run", now_utc=now)
+    assert last["selected_run_id"] == "run-new"
+    assert last["overall"]["total_attempts"] == 3
+    assert last["overall"]["failed_attempts"] == 1
+    assert last["overall"]["attempt_failure_rate"] == pytest.approx(1 / 3)
+    assert last["overall"]["logical_fetches"] == 2
+    assert last["overall"]["final_failures"] == 0
+    assert last["overall"]["final_fetch_failure_rate"] == 0.0
+    assert last["overall"]["retries"] == 1
+    assert last["by_page_type"][PAGE_TYPE_SEARCH]["count"] == 1
+    assert last["by_page_type"][PAGE_TYPE_DETAIL]["count"] == 2
+    assert last["is_stale"] is False
+
+    # Advancing clock 30h marks latest completed run stale (>26h default).
+    stale_check = get_performance_summary(
+        db, window="24h", now_utc=now + timedelta(hours=30)
+    )
+    assert stale_check["overall"]["count"] == 0
+    assert stale_check["is_stale"] is True
+
+    all_stats = get_performance_summary(db, window="all", now_utc=now)
+    assert all_stats["overall"]["total_attempts"] == 5
+    assert all_stats["overall"]["logical_fetches"] == 3
+    assert all_stats["overall"]["final_failures"] == 1
+    assert all_stats["overall"]["retries"] == 2
+
+
+def test_open_readonly_db_blocks_writes_and_migrates_v1_to_v2(tmp_path):
+    path = str(tmp_path / "mon.db")
+    conn = connect(path)
+    meta = conn.execute(
+        "SELECT value FROM schema_meta WHERE key='schema_version'"
+    ).fetchone()
+    assert meta["value"] == MONITORING_SCHEMA_VERSION
+    record_request_event(
+        conn, page_type=PAGE_TYPE_SEARCH, outcome=ATTEMPT_OK, duration_ms=12.0
+    )
+    conn.close()
+
+    ro = open_readonly_db(path)
+    assert ro.execute("SELECT COUNT(*) AS n FROM request_events").fetchone()["n"] == 1
+    with pytest.raises(sqlite3.OperationalError):
+        ro.execute("DELETE FROM request_events")
+    ro.close()
