@@ -60,3 +60,14 @@ RETRY_BACKOFF = 1.0  # seconds, multiplied by attempt number
 # Default output paths (relative to the project root).
 DEFAULT_DB_PATH = "data/olx.db"
 DEFAULT_EXPORT_DIR = "data"
+
+# Separate SQLite database holding durable monitoring history (discoveries,
+# observations, run lifecycle, cumulative counters). It is intentionally kept
+# isolated from the listing database so reporting never mutates the listing
+# schema, its upsert semantics, or its export column order.
+DEFAULT_MONITORING_DB_PATH = "data/monitoring.db"
+
+# Directory holding historical daily exports (listings-YYYY-MM-DD.json / .csv)
+# that an operator may explicitly import as reconstructed discovery/observation
+# estimates. Nothing is imported automatically; these are operator actions.
+DEFAULT_ARCHIVE_DIR = "data/archive"

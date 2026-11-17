@@ -340,7 +340,7 @@
 
 ## 1. Objective & Scope
 * **Goal:** Provide Grafana listing reports and application-performance dashboards backed by Prometheus and a durable metrics exporter. Preserve the scheduled one-shot scraper and its existing listing schema and upsert behavior; retain monitoring history separately and serve listing reports from a consistent read-only reporting snapshot.
-* **Status:** Approved by the developer on 2026-10-04. Stop after planning; implementation will occur in a separate session. This is the active implementation specification; preceding specifications are historical.
+* **Status:** Original plan and Evolution revisions explicitly approved by the developer on 2026-10-04. Stop here; implementation will occur in a separate session. Unit 1 foundation exists but is reopened for the corrective checks below. This is the active implementation specification; preceding specifications are historical.
 * **Target Files/Directories:** [scraper/](scraper/), [tests/](tests/), [pyproject.toml](pyproject.toml), [uv.lock](uv.lock), [Dockerfile](Dockerfile), [docker-compose.yml](docker-compose.yml), [deploy/](deploy/), [README.md](README.md), and [.github/workflows/release.yml](.github/workflows/release.yml) only if required to package/publish the exporter. New monitoring modules, tests, and Grafana/Prometheus provisioning assets belong within those directories. Do not modify operational guidance during implementation.
 * **Out of Scope:** Arbitrary SQL editor or custom reporting frontend; browser-based database writes; OLX posting-date filters; physical-laptop/repost deduplication; database-operation timing; host-resource monitoring; notifications and external uptime monitoring; public internet exposure; HTTPS/certificate infrastructure for this release; proprietary integrations; changes to scraper politeness or scheduled frequency.
 
@@ -350,6 +350,7 @@
 * Discovery reports use first-discovery date; activity reports use observation/fetch date. Never label observation totals as unique listings. Show today's and all-time observation totals from accurate tracking onset separately from archived lower-bound counts.
 * Initial listing filters: discovery date range, city (all or one configured city), minimum/maximum numeric price in PKR. Display matching count and a bounded listing table with title, price, city, discovery date, and OLX link. Price filters use latest stored price, not historical price at discovery. Unknown prices are excluded when numeric bounds are selected and otherwise may appear as unknown. Invalid/reversed ranges must produce a clear validation/empty-state response, not unsafe query interpolation.
 * Store timestamps in UTC; use Asia/Karachi for dashboard calendar dates and "today" by default. Use consistent start-inclusive/end-exclusive boundaries. Explicitly distinguish discovery, observation, and snapshot freshness dates.
+* **Approved timezone compromise (2026-10-04):** Keep the existing UTC+05:00 fallback when timezone data is unavailable for the currently tracked dates. Do not promise correct historical daylight-saving dates. Revisit before importing older dates or if Pakistan changes its clocks; see [DEBT-002](TECH_DEBT.md). Verify fallback behavior explicitly rather than relying only on the developer machine's timezone data.
 
 ### Historical Data and Schema Boundary
 * Read-only inspection on 2026-10-04 found 8,112 distinct IDs in the production backup and one listing table with existing scrape and estimated posting timestamps. All 36 daily JSON exports from August 30 through October 4 cover those IDs; CSV counterparts agree on IDs and scrape timestamps. 5,808 IDs have earlier timestamps in archives; 14,585 distinct retained ID/timestamp pairs are a historical observation lower bound, not an exact total.
@@ -383,19 +384,22 @@
 * Prometheus must collect durable histograms while jobs are running, not solely a last-run histogram that is overwritten. Test multiple runs between scrapes and exporter downtime. Exact business/calendar counts come from persisted observation/discovery records, not approximate Prometheus counter increases. Explain initial Prometheus baseline and visibility gaps; do not claim percentiles before collection began.
 
 ## 2. Dependencies & Prerequisites
-- [x] Interview decisions above approved individually; implementation approval remains pending.
+- [x] Interview decisions and revised plan explicitly approved on 2026-10-04; developer requested implementation in a separate session.
 - [x] Production database and daily export coverage inspected read-only; data files remain ignored by Git.
 - [x] GitHub intake completed via existing integration: no open issues on 2026-10-04. [BLOCKED.md](BLOCKED.md) records the earlier tooling blocker as resolved.
-- [ ] Verify selected Grafana, Prometheus, SQLite plugin, and Python instrumentation versions and mini-PC architecture compatibility; lock dependencies and plugin security behavior before implementation consumers.
-- [ ] Operator provides LAN/Tailscale bind addresses, runtime Grafana credentials, Docker volume permissions, and deployment access during deployment. These are runtime inputs, not credentials to place in the specification.
+- [ ] Verify selected Grafana, Prometheus, SQLite plugin, and Python instrumentation versions and mini-PC architecture compatibility; lock dependencies and plugin security behavior before the parts that use them. **Developer-approved gate clarification (2026-10-04):** Unit 1 storage/import and its corrective tests may proceed independently. Unit 2 must verify any selected instrumentation/exporter dependency before using it. Units 3–4 must verify the selected services/plugin, platform support, and security settings before their dependent work. This scopes the checks without removing them.
+- [ ] Operator provides LAN/Tailscale bind addresses, runtime Grafana credentials, Docker volume permissions, and deployment access during deployment. These gate deployment/access verification, not isolated foundation tests. They are runtime inputs, not credentials to place in the specification.
 
 ## 3. Implementation Units (Execution Order)
 *Implement in logical order of foundational dependencies first, regardless of list position.*
 
-- [ ] **Unit 1: Durable monitoring model and historical import**
-  - [ ] Add isolated monitoring storage and explicit archive import under [scraper/](scraper/), with compatible local defaults and configurable paths; preserve listing schema/upsert/export semantics.
-  - [ ] Implement immutable discovery records, idempotent import/reconciliation, observation identifiers, run lifecycle, cumulative metrics, schema migration for monitoring only, and restart/recovery consistency.
-  - [ ] Add synthetic-fixture tests for repeated observations, archived estimates, missing history, duplicate snapshots/imports, timezone boundaries, and storage failures without using production data.
+- [x] **Unit 1: Durable monitoring model and historical import**
+  - [x] Add isolated monitoring storage and explicit archive import under [scraper/](scraper/), with compatible local defaults and configurable paths; preserve listing schema/upsert/export semantics.
+  - [x] Implement immutable discovery records, idempotent import/reconciliation, observation identifiers, run lifecycle, cumulative metrics, schema migration for monitoring only, and restart/recovery consistency.
+  - [x] Add synthetic-fixture tests for repeated observations, archived estimates, missing history, duplicate snapshots/imports, timezone boundaries, and storage failures without using production data.
+  - [x] Resolve [REV-001 and REV-002](REVIEWER_FINDINGS.md): never substitute posting time for discovery/observation time; preserve immutable live discovery dates and allow only the explicit archive reconciliation permitted above. Add regression tests before fixes.
+  - [x] Verify date-boundary behavior with timezone data unavailable for current supported dates; document the older-date limit in operator guidance. Existing foundation baseline: 68 tests passed on 2026-10-04; this does not verify these missing cases or the remaining stack.
+  - **Continuation guidance:** Follow [.agents/skills/monitoring.md](.agents/skills/monitoring.md) and resolve the above foundation gaps before Units 2–4 consume the model. Existing completed subitems remain recorded; the parent unit is reopened because its contract is not fully verified.
 - [ ] **Unit 2: Instrumentation and read-only exporter**
   - [ ] Instrument [fetcher.py](scraper/fetcher.py) and [runner.py](scraper/runner.py) for the agreed metrics, preserving retry/delay behavior and injected test fetchers; persist state independent of monitoring-service reachability.
   - [ ] Package an exporter entry point using the existing image where compatible, without changing its default scraper entry point. Add required locked dependencies only.

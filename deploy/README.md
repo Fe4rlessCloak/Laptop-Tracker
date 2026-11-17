@@ -248,5 +248,21 @@ sudo docker volume ls | grep laptop-tracker
 sudo docker run --rm -v laptop-tracker-data:/data alpine ls -la /data
 ```
 
+---
+
+## Monitoring Database & Timezone Notes
+
+- Monitoring history (`data/monitoring.db`) is kept separate from `olx.db`.
+  Operators can import retained daily exports explicitly via
+  `python -m scraper.monitoring --db data/monitoring.db import <path>` and
+  inspect totals with `stats`.
+- Reporting calendar dates use `Asia/Karachi` via system `zoneinfo` when
+  available and fall back to a fixed `UTC+05:00` offset when timezone data is
+  absent (such as in minimal container images). That fallback is accurate for
+  post-2009 dates without DST, but **older pre-2009 daylight-saving dates or
+  future Pakistan clock-rule changes require packaged `tzdata`** (see
+  `TECH_DEBT.md` `DEBT-002`).
+
+
 If the volume exists but `/data` is empty, the container exited before
 writing — check `journalctl` for the error.

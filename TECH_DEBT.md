@@ -44,3 +44,41 @@ Including seller name in Release 1.0.0 captures useful attribution data for the 
 - **Resolved By:**
 - **Resolved On:**
 - **Notes:**
+
+---
+
+## [DEBT-002] – Fixed Pakistan-time fallback without packaged timezone data
+
+- **Date Added:** 2026-10-04
+- **Status:** OPEN
+- **File Location:** [scraper/monitoring.py](scraper/monitoring.py:51)
+- **Spec Reference:** [SPECS.md](SPECS.md) — Persistent Monitoring and Predefined Listing Reports
+- **Introduced By:** Existing uncommitted Unit 1 foundation; compromise retained explicitly by the developer on 2026-10-04.
+
+### Compromise
+
+When system timezone data is unavailable, reporting uses a fixed UTC+05:00 offset instead of requiring packaged timezone data.
+
+### Justification
+
+Retain the existing dependency-free fallback for the currently tracked 2026 dates. The developer approved keeping it while recording its limits.
+
+### Impact
+
+- Older Pakistan daylight-saving dates can be assigned to the wrong reporting day when the fallback is used.
+- A future clock-rule change could make current reporting dates incorrect.
+- Host tests alone do not verify the missing-timezone-data path; availability varies by runtime image and environment.
+
+### Remediation
+
+Revisit before importing older dates or if Pakistan changes its clocks. Package supported timezone data when needed, verify the runtime image, and reconcile persisted calendar-date fields without changing UTC timestamps or duplicating observations.
+
+### Verification
+
+Synthetic tests cover local midnight with and without timezone data for supported dates. To resolve the debt, also verify older clock-rule transitions against packaged timezone data in the runtime image and check any required date-field reconciliation.
+
+### Resolution
+
+- **Resolved By:**
+- **Resolved On:**
+- **Notes:**
