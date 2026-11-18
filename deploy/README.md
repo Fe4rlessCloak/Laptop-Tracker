@@ -127,7 +127,9 @@ sudo systemctl status olx-scraper.service
 
 A successful run ends with a line like
 `Fetched 109 listings, 75 new, 34 updated, 0 skipped, 0 errors` and the
-process exit code 0.
+process exit code 0. A run that fetched nothing but reported errors, or that
+OLX refused outright, now exits non-zero and shows as failed in
+`systemctl status` instead of silently succeeding.
 
 ### "What data is in the DB?"
 
@@ -226,6 +228,24 @@ curl -I https://www.olx.com.pk/
 OLX occasionally rate-limits or returns 5xx. The scraper has retry/backoff
 (see `MAX_RETRIES` and `RETRY_BACKOFF` in `scraper/config.py`); a transient
 failure usually clears on the next scheduled run.
+
+If the log shows `503` for every request with `Security check | OLX` in the
+body and `retry-after: 3600`, the run was blocked rather than rate-limited:
+the log ends with `Scrape blocked by OLX`, the unit exits 1, and the retries
+are skipped because the block outlasts the run. Confirm the request headers
+are still accepted from the box before changing anything:
+
+```bash
+# Expect 200. A 503 here means OLX changed its rule again.
+sudo docker run --rm --pull=always \
+    -v laptop-tracker-data:/app/data \
+    ghcr.io/fe4rlesscloak/laptop-tracker:latest \
+    --hours 1 --cities islamabad
+```
+
+If that 503s, the fix belongs in `scraper/config.py::BROWSER_HEADERS` — OLX
+requires a coherent Chrome document-navigation header set and rejects a bare
+`User-Agent` (see `learnings/`).
 
 ### "The systemd timer isn't firing"
 

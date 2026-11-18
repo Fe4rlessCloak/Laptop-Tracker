@@ -12,6 +12,7 @@ import argparse
 import sys
 
 from scraper import config
+from scraper.fetcher import FetchBlocked
 from scraper.runner import run
 
 
@@ -85,16 +86,31 @@ def main(argv=None) -> int:
             return 2
         cities[name] = slug
 
-    summary = run(
-        cities=cities,
-        hours=args.hours,
-        db_path=args.db,
-        export=args.export,
-        delay=args.delay,
-        category=args.category,
-        monitoring_db_path=args.monitoring_db,
-    )
+    try:
+        summary = run(
+            cities=cities,
+            hours=args.hours,
+            db_path=args.db,
+            export=args.export,
+            delay=args.delay,
+            category=args.category,
+            monitoring_db_path=args.monitoring_db,
+        )
+    except FetchBlocked as exc:
+        print(f"Scrape blocked by OLX: {exc}", file=sys.stderr)
+        print(
+            "OLX returns 503 'Security check' when the request headers are "
+            "inconsistent. Check BROWSER_HEADERS in scraper/config.py.",
+            file=sys.stderr,
+        )
+        return 1
+
     print(summary)
+    if summary.fetched == 0 and summary.errors > 0:
+        # Every fetch failed but nothing raised: treat it as a failed run so
+        # systemd surfaces it instead of reporting success for weeks.
+        print("Run fetched no listings and reported fetch errors.", file=sys.stderr)
+        return 1
     return 0
 
 

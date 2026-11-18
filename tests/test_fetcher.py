@@ -4,13 +4,14 @@ import pytest
 import requests
 
 from scraper.config import BROWSER_HEADERS
-from scraper.fetcher import FetchError, Fetcher
+from scraper.fetcher import FetchBlocked, FetchError, Fetcher
 
 
 class FakeResponse:
-    def __init__(self, status_code, text=""):
+    def __init__(self, status_code, text="", headers=None):
         self.status_code = status_code
         self.text = text
+        self.headers = headers or {}
 
 
 class FakeSession:
@@ -51,6 +52,50 @@ def test_get_raises_after_exhausting_retries():
     fetcher = Fetcher(delay=0, max_retries=2, backoff=0, session=session)
     with pytest.raises(FetchError):
         fetcher.get("https://example.com")
+
+
+def test_long_retry_after_aborts_without_retrying():
+    events = []
+    session = FakeSession(
+        [FakeResponse(503, "", headers={"Retry-After": "3600"})]
+    )
+    fetcher = Fetcher(
+        delay=0, max_retries=3, backoff=0, session=session, on_attempt=events.append
+    )
+    with pytest.raises(FetchBlocked):
+        fetcher.get("https://example.com")
+    assert len(session.calls) == 1
+    assert events[0]["outcome"] == "blocked"
+    assert events[0]["is_final"] is True
+
+
+def test_short_retry_after_is_waited_out_then_retried(monkeypatch):
+    slept = []
+    monkeypatch.setattr("scraper.fetcher.time.sleep", slept.append)
+    session = FakeSession(
+        [
+            FakeResponse(503, "", headers={"Retry-After": "7"}),
+            FakeResponse(200, "<html>ok</html>"),
+        ]
+    )
+    fetcher = Fetcher(delay=0, max_retries=3, backoff=5, session=session)
+    assert fetcher.get("https://example.com") == "<html>ok</html>"
+    assert slept == [7.0]
+    assert len(session.calls) == 2
+
+
+def test_retry_after_threshold_is_configurable(monkeypatch):
+    monkeypatch.setattr("scraper.fetcher.time.sleep", lambda _s: None)
+    session = FakeSession(
+        [
+            FakeResponse(503, "", headers={"Retry-After": "90"}),
+            FakeResponse(200, "<html>ok</html>"),
+        ]
+    )
+    fetcher = Fetcher(
+        delay=0, max_retries=2, backoff=0, max_retry_after=120, session=session
+    )
+    assert fetcher.get("https://example.com") == "<html>ok</html>"
 
 
 def test_get_raises_on_non_retryable_status():

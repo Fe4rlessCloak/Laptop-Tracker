@@ -20,7 +20,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from scraper import config
-from scraper.fetcher import Fetcher, FetchError
+from scraper.fetcher import FetchBlocked, Fetcher, FetchError
 from scraper.monitoring import (
     OUTCOME_FAILED,
     OUTCOME_STORED,
@@ -181,6 +181,10 @@ def run(
                     )
                 try:
                     html = fetcher.get(url)
+                except FetchBlocked as exc:
+                    print(f"[{city}] blocked, aborting run: {exc}")
+                    summary.errors += 1
+                    raise
                 except FetchError as exc:
                     print(f"[{city}] search fetch failed: {exc}")
                     summary.errors += 1
@@ -208,6 +212,9 @@ def run(
                     try:
                         detail_html = fetcher.get(listing["item_url"])
                         listing = parse_item_detail(detail_html, listing)
+                    except FetchBlocked:
+                        summary.errors += 1
+                        raise
                     except FetchError as exc:
                         print(
                             f"[{city}] item {listing['item_id']} fetch failed: {exc}"

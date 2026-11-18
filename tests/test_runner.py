@@ -12,7 +12,7 @@ from datetime import date
 import pytest
 
 from scraper import config
-from scraper.fetcher import Fetcher
+from scraper.fetcher import FetchBlocked, Fetcher
 from scraper.monitoring import (
     OUTCOME_FAILED,
     OUTCOME_STORED,
@@ -273,9 +273,10 @@ def test_run_records_monitoring_telemetry_across_repeat_runs(tmp_path):
     request_events without altering olx.db."""
 
     class Resp:
-        def __init__(self, status_code, text=""):
+        def __init__(self, status_code, text="", headers=None):
             self.status_code = status_code
             self.text = text
+            self.headers = headers or {}
 
     class ScriptedSession:
         def __init__(self, responses):
@@ -366,6 +367,37 @@ def test_run_records_failed_observation_and_run_on_storage_error(
 
     mon = mon_connect(mon_path)
     assert count_observations(mon, outcome=OUTCOME_FAILED) == 1
+    perf = get_performance_summary(mon, window="all")
+    assert perf["recent_runs"][0]["outcome"] == RUN_FAILED
+    mon.close()
+
+
+def test_blocked_fetch_aborts_run_and_records_failure(tmp_path):
+    db_path = str(tmp_path / "olx.db")
+    mon_path = str(tmp_path / "monitoring.db")
+
+    class BlockedFetcher(StubFetcher):
+        def get(self, url):
+            raise FetchBlocked("HTTP 503 with Retry-After 3600s")
+
+    with pytest.raises(FetchBlocked):
+        run(
+            cities={
+                "islamabad": "islamabad_g4060615",
+                "rawalpindi": "rawalpindi_g4060681",
+            },
+            hours=24,
+            db_path=db_path,
+            monitoring_db_path=mon_path,
+            fetcher=BlockedFetcher(),
+        )
+
+    conn = connect(db_path)
+    assert count_listings(conn) == 0
+    conn.close()
+
+    mon = mon_connect(mon_path)
+    assert count_unique_listings(mon) == 0
     perf = get_performance_summary(mon, window="all")
     assert perf["recent_runs"][0]["outcome"] == RUN_FAILED
     mon.close()

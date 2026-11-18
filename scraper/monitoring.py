@@ -101,11 +101,15 @@ ATTEMPT_OK = "ok"
 ATTEMPT_TRANSIENT_HTTP = "transient_http"
 ATTEMPT_HTTP_ERROR = "http_error"
 ATTEMPT_REQUEST_ERROR = "request_error"
+# A transient status carrying a Retry-After longer than the run is willing to
+# wait: the client is blocked, not just unlucky, and the attempt loop aborts.
+ATTEMPT_BLOCKED = "blocked"
 VALID_ATTEMPT_OUTCOMES = (
     ATTEMPT_OK,
     ATTEMPT_TRANSIENT_HTTP,
     ATTEMPT_HTTP_ERROR,
     ATTEMPT_REQUEST_ERROR,
+    ATTEMPT_BLOCKED,
 )
 
 
@@ -245,7 +249,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             city           TEXT,
             attempt_number INTEGER NOT NULL,       -- 1-based attempt index
             status_code    INTEGER,                -- NULL on network/request error
-            outcome        TEXT NOT NULL,          -- ok | transient_http | http_error | request_error
+            outcome        TEXT NOT NULL,          -- ok | transient_http | http_error | request_error | blocked
             is_final       INTEGER NOT NULL DEFAULT 0,
             duration_ms    REAL NOT NULL
         );

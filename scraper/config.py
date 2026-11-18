@@ -76,6 +76,12 @@ BROWSER_HEADERS = {
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.0  # seconds, multiplied by attempt number
 
+# Upper bound on a ``Retry-After`` we are willing to wait out inside a run. OLX
+# answers a blocked request with ``503`` and ``Retry-After: 3600``; sleeping
+# that long is pointless, and retrying immediately just re-triggers the block.
+# Anything above this bound aborts the run with ``FetchBlocked`` instead.
+MAX_RETRY_AFTER = 60.0
+
 # Default output paths (relative to the project root).
 DEFAULT_DB_PATH = "data/olx.db"
 DEFAULT_EXPORT_DIR = "data"
