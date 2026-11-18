@@ -43,6 +43,13 @@ DEFAULT_HOURS = 24
 # this covers ~1000 ads, far more than a 24h window needs.
 MAX_PAGES = 20
 
+# Safety cap on detail-page fetches per run. Only listings without a stored
+# description need a detail page (new items, or ones whose previous detail
+# fetch failed); everything else is stored from the search card. The cap bounds
+# the worst case: once it is hit, remaining listings are stored from card data
+# only and get enriched on a later run.
+MAX_DETAIL_FETCHES_PER_RUN = 60
+
 # Default delay (seconds) between HTTP requests to stay polite to the site.
 DEFAULT_DELAY = 2.0
 

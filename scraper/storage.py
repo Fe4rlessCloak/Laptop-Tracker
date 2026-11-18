@@ -181,6 +181,17 @@ def listing_exists(conn: sqlite3.Connection, item_id: str) -> bool:
     return row is not None
 
 
+def get_listing(
+    conn: sqlite3.Connection, item_id: str
+) -> Optional[Dict[str, Any]]:
+    """Return a stored listing as a dict, or ``None`` when it is absent."""
+    row = conn.execute(
+        f"SELECT {', '.join(LISTING_COLUMNS)} FROM listings WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
+    return _row_to_listing(row) if row is not None else None
+
+
 def fetch_all(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Return all stored listings as dicts."""
     rows = conn.execute(f"SELECT {', '.join(LISTING_COLUMNS)} FROM listings").fetchall()

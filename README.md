@@ -14,7 +14,7 @@ The goal is to reliably capture the freshest listings so you can later flag the 
 - **Rich data** — title, price (normalized), location, relative posting time, description, image URLs (text only — no image downloads), the "Featured" flag, and the **seller's display name**.
 - **SQLite storage with upserts** — repeated runs insert new listings and update existing ones by OLX item ID, building a clean history over time. Legacy databases are auto-migrated to add new columns.
 - **CSV/JSON export** — easy viewing and downstream analysis.
-- **Polite fetching** — coherent browser request headers (a bare Chrome `User-Agent` gets a `503` from OLX), configurable delay between requests, and retry/backoff on transient failures.
+- **Polite fetching** — coherent browser request headers (a bare Chrome `User-Agent` gets a `503` from OLX), configurable delay between requests, retry/backoff on transient failures, and detail pages fetched only for listings that are not already enriched, capped at `MAX_DETAIL_FETCHES_PER_RUN = 60` per run. A steady-state run is a handful of search pages plus genuinely new listings.
 - **CI/CD** — every push to `main` runs tests, builds the image, and pushes it to `ghcr.io`. The Ubuntu box pulls the new image on its next scheduled run.
 - **Scheduled deploy** — a systemd timer runs the container twice a day (09:00 and 21:00 local), with `Persistent=true` so missed runs after a reboot fire immediately.
 

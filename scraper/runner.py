@@ -43,6 +43,7 @@ from scraper.storage import (
     export_csv,
     export_json,
     fetch_all,
+    get_listing,
     upsert_listing,
 )
 
@@ -127,6 +128,8 @@ def run(
     fetcher = fetcher or Fetcher(delay=delay)
     summary = RunSummary()
     run_t0 = time.monotonic()
+    detail_fetches = 0
+    cap_logged = False
 
     conn = connect(db_path)
     resolved_mon_path = _resolve_monitoring_db_path(db_path, monitoring_db_path)
@@ -205,30 +208,52 @@ def run(
                     break
 
                 for listing in kept:
-                    if has_ctx:
-                        fetcher.set_attempt_context(
-                            page_type=PAGE_TYPE_DETAIL, city=city
-                        )
-                    try:
-                        detail_html = fetcher.get(listing["item_url"])
-                        listing = parse_item_detail(detail_html, listing)
-                    except FetchBlocked:
-                        summary.errors += 1
-                        raise
-                    except FetchError as exc:
+                    item_id = listing.get("item_id")
+                    existing = (
+                        get_listing(conn, str(item_id)) if item_id else None
+                    )
+                    if existing and existing.get("description"):
+                        # An earlier run already enriched this listing. Reuse
+                        # its detail fields rather than spending a request, so
+                        # a steady-state run only fetches genuinely new items.
+                        listing = {
+                            **listing,
+                            "description": existing.get("description"),
+                            "image_urls": existing.get("image_urls") or [],
+                            "seller_name": existing.get("seller_name"),
+                        }
+                    elif detail_fetches < config.MAX_DETAIL_FETCHES_PER_RUN:
+                        detail_fetches += 1
+                        if has_ctx:
+                            fetcher.set_attempt_context(
+                                page_type=PAGE_TYPE_DETAIL, city=city
+                            )
+                        try:
+                            detail_html = fetcher.get(listing["item_url"])
+                            listing = parse_item_detail(detail_html, listing)
+                        except FetchBlocked:
+                            summary.errors += 1
+                            raise
+                        except FetchError as exc:
+                            print(
+                                f"[{city}] item {listing['item_id']} fetch failed: {exc}"
+                            )
+                            summary.errors += 1
+                            # Still store the partial listing (title/price/location).
+                        finally:
+                            fetcher.sleep_between()
+                    elif not cap_logged:
+                        cap_logged = True
                         print(
-                            f"[{city}] item {listing['item_id']} fetch failed: {exc}"
+                            f"[cap] detail fetch limit "
+                            f"({config.MAX_DETAIL_FETCHES_PER_RUN}) reached; "
+                            "storing remaining listings from card data"
                         )
-                        summary.errors += 1
-                        # Still store the partial listing (title/price/location).
-                    finally:
-                        fetcher.sleep_between()
 
                     encounter_ts = (
                         listing.get("scraped_at")
                         or datetime.now(timezone.utc).isoformat()
                     )
-                    item_id = listing.get("item_id")
                     try:
                         is_new = upsert_listing(conn, listing)
                     except Exception:

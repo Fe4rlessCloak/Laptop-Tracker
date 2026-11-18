@@ -12,7 +12,7 @@ from datetime import date
 import pytest
 
 from scraper import config
-from scraper.fetcher import FetchBlocked, Fetcher
+from scraper.fetcher import FetchBlocked, FetchError, Fetcher
 from scraper.monitoring import (
     OUTCOME_FAILED,
     OUTCOME_STORED,
@@ -268,9 +268,10 @@ def test_build_search_url_round_trips_every_documented_category():
 
 
 def test_run_records_monitoring_telemetry_across_repeat_runs(tmp_path):
-    """Two runs with a repeated listing, a recovered detail retry, and an
-    exhausted detail fetch record exact discoveries, observations, runs, and
-    request_events without altering olx.db."""
+    """Two runs with a repeated listing and a recovered detail retry record exact
+    discoveries, observations, runs, and request_events without altering olx.db.
+    The second run skips the detail fetch because the listing is already
+    enriched, so its only extra attempt is the failing page-2 search."""
 
     class Resp:
         def __init__(self, status_code, text="", headers=None):
@@ -309,8 +310,9 @@ def test_run_records_monitoring_telemetry_across_repeat_runs(tmp_path):
     assert s1.new == 1
     assert s1.errors == 0
 
-    # Run 2: same iid-111 appears again, detail fetch exhausts retries (404),
-    # partial listing is still stored, run finishes completed-with-fetch-errors.
+    # Run 2: same iid-111 appears again but is already enriched, so its detail
+    # page is skipped; page 2 returns 404 and the run finishes
+    # completed-with-fetch-errors.
     session2 = ScriptedSession(
         [
             Resp(200, PAGE1_HTML),
@@ -337,9 +339,9 @@ def test_run_records_monitoring_telemetry_across_repeat_runs(tmp_path):
     assert len(perf["recent_runs"]) == 2
     assert perf["recent_runs"][0]["outcome"] == RUN_COMPLETED_WITH_FETCH_ERRORS
     assert perf["recent_runs"][1]["outcome"] == RUN_COMPLETED
-    assert perf["overall"]["total_attempts"] == 7
+    assert perf["overall"]["total_attempts"] == 6
     assert perf["overall"]["failed_attempts"] == 2
-    assert perf["overall"]["logical_fetches"] == 6
+    assert perf["overall"]["logical_fetches"] == 5
     assert perf["overall"]["final_failures"] == 1
     assert perf["overall"]["retries"] == 1
     mon.close()
@@ -370,6 +372,108 @@ def test_run_records_failed_observation_and_run_on_storage_error(
     perf = get_performance_summary(mon, window="all")
     assert perf["recent_runs"][0]["outcome"] == RUN_FAILED
     mon.close()
+
+
+def test_second_run_skips_detail_fetch_for_enriched_listings(tmp_path):
+    db_path = str(tmp_path / "olx.db")
+
+    run(
+        cities={"islamabad": "islamabad_g4060615"},
+        hours=24,
+        db_path=db_path,
+        fetcher=StubFetcher(),
+    )
+
+    class NoDetailFetcher(StubFetcher):
+        def get(self, url):
+            assert "/item/" not in url, f"unexpected detail fetch: {url}"
+            return super().get(url)
+
+    summary = run(
+        cities={"islamabad": "islamabad_g4060615"},
+        hours=24,
+        db_path=db_path,
+        fetcher=NoDetailFetcher(),
+    )
+
+    assert summary.new == 0
+    assert summary.updated == 2
+    assert summary.errors == 0
+
+    conn = connect(db_path)
+    by_id = {r["item_id"]: r for r in fetch_all(conn)}
+    conn.close()
+    assert by_id["111"]["description"] == "Core i5 8th gen, 8GB RAM."
+    assert by_id["111"]["image_urls"] == [
+        "https://images.olx.com.pk/thumbnails/1-400x300.jpeg"
+    ]
+
+
+def test_detail_fetch_cap_limits_requests_per_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "MAX_DETAIL_FETCHES_PER_RUN", 1)
+    db_path = str(tmp_path / "olx.db")
+    detail_calls = []
+
+    class CountingFetcher(StubFetcher):
+        def get(self, url):
+            if "/item/" in url:
+                detail_calls.append(url)
+            return super().get(url)
+
+    summary = run(
+        cities={"islamabad": "islamabad_g4060615"},
+        hours=24,
+        db_path=db_path,
+        fetcher=CountingFetcher(),
+    )
+
+    assert len(detail_calls) == 1
+    assert summary.new == 2
+
+    conn = connect(db_path)
+    by_id = {r["item_id"]: r for r in fetch_all(conn)}
+    conn.close()
+    # The first listing got the single detail fetch; the second was stored
+    # from card data and left for a later run.
+    assert by_id["111"]["description"] == "Core i5 8th gen, 8GB RAM."
+    assert by_id["333"]["description"] is None
+
+
+def test_partial_listing_is_enriched_on_next_run(tmp_path):
+    db_path = str(tmp_path / "olx.db")
+
+    class FailingDetailFetcher(StubFetcher):
+        def get(self, url):
+            if "/item/" in url:
+                raise FetchError("boom")
+            return super().get(url)
+
+    first = run(
+        cities={"islamabad": "islamabad_g4060615"},
+        hours=24,
+        db_path=db_path,
+        fetcher=FailingDetailFetcher(),
+    )
+    assert first.new == 2
+    assert first.errors == 2
+
+    conn = connect(db_path)
+    assert all(r["description"] is None for r in fetch_all(conn))
+    conn.close()
+
+    second = run(
+        cities={"islamabad": "islamabad_g4060615"},
+        hours=24,
+        db_path=db_path,
+        fetcher=StubFetcher(),
+    )
+    assert second.errors == 0
+
+    conn = connect(db_path)
+    by_id = {r["item_id"]: r for r in fetch_all(conn)}
+    conn.close()
+    assert by_id["111"]["description"] == "Core i5 8th gen, 8GB RAM."
+    assert by_id["333"]["description"] == "Core i5 8th gen, 8GB RAM."
 
 
 def test_blocked_fetch_aborts_run_and_records_failure(tmp_path):
