@@ -3,6 +3,7 @@
 import pytest
 import requests
 
+from scraper.config import BROWSER_HEADERS
 from scraper.fetcher import FetchError, Fetcher
 
 
@@ -72,10 +73,19 @@ def test_get_raises_on_network_error():
     assert len(session.calls) == 2
 
 
-def test_user_agent_set_on_session():
+def test_browser_headers_set_on_session():
     session = FakeSession([FakeResponse(200, "")])
-    Fetcher(delay=0, session=session)
-    assert "User-Agent" in session.headers
+    fetcher = Fetcher(delay=0, session=session)
+    assert session.headers["User-Agent"] == fetcher.user_agent
+    for name, value in BROWSER_HEADERS.items():
+        assert session.headers[name] == value
+
+
+def test_explicit_user_agent_overrides_browser_headers():
+    session = FakeSession([FakeResponse(200, "")])
+    Fetcher(delay=0, session=session, user_agent="custom-agent")
+    assert session.headers["User-Agent"] == "custom-agent"
+    assert session.headers["Sec-Fetch-Mode"] == "navigate"
 
 
 def test_fetcher_emits_bounded_attempt_telemetry_for_retries_and_errors():

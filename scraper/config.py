@@ -53,6 +53,25 @@ USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
+# Coherent browser request headers. OLX's edge answers a Chrome User-Agent that
+# arrives without the headers a real Chrome navigation sends with a 503
+# "Security check | OLX" page (``retry-after: 3600``). Verified 2026-11-18:
+# UA alone is blocked, UA + these headers returns 200, and dropping ``Accept``,
+# ``Accept-Language``, or any of the three ``Sec-Fetch-*`` values re-triggers
+# the block. ``Sec-Fetch-User``, ``Upgrade-Insecure-Requests``, and the
+# ``sec-ch-ua*`` hints are not required.
+BROWSER_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+}
+
 # Retry/backoff settings for transient network failures.
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.0  # seconds, multiplied by attempt number

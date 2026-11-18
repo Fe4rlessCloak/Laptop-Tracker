@@ -1,9 +1,13 @@
 """Polite HTTP fetching for the OLX scraper.
 
-Wraps ``requests`` with a realistic browser User-Agent, a configurable delay
+Wraps ``requests`` with coherent browser request headers, a configurable delay
 between requests, and retry/backoff on transient failures. Keeping all network
 behaviour in one place makes it easy to swap in a headless browser later if OLX
 starts blocking plain HTTP requests.
+
+The header set matters: OLX returns a 503 "Security check" page to a Chrome
+User-Agent that lacks the headers a real Chrome navigation sends. See
+``scraper.config.BROWSER_HEADERS``.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from typing import Any, Callable, Dict, Optional
 import requests
 
 from scraper.config import (
+    BROWSER_HEADERS,
     MAX_RETRIES,
     RETRY_BACKOFF,
     USER_AGENT,
@@ -45,6 +50,7 @@ class Fetcher:
         self.backoff = backoff
         self.user_agent = user_agent
         self.session = session or requests.Session()
+        self.session.headers.update(BROWSER_HEADERS)
         self.session.headers.update({"User-Agent": self.user_agent})
         self.on_attempt = on_attempt
         self._attempt_context: Dict[str, Optional[str]] = {
