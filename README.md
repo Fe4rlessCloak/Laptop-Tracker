@@ -1,5 +1,13 @@
 # Laptop Tracker — OLX Pakistan Scraper
 
+> **Project status: discontinued.** This project is no longer in development.
+> OLX has been hardening its anti-scraping controls, and the service now
+> rejects automated clients rather than serving them. Continuing would mean
+> deliberately working around those controls, and OLX's
+> [Terms of Use](https://help.olx.com.pk/hc/en-us/articles/35615763019793-What-are-the-terms-of-use)
+> prohibit automated collection of the Service. The repository is left as-is
+> for reference only: it is unmaintained and is not expected to keep working.
+
 [![Release](https://github.com/Fe4rlessCloak/Laptop-Tracker/actions/workflows/release.yml/badge.svg)](https://github.com/Fe4rlessCloak/Laptop-Tracker/actions/workflows/release.yml)
 [![Image](https://img.shields.io/badge/ghcr.io-fe4rlesscloak%2Flaptop--tracker-blue)](https://github.com/Fe4rlessCloak/Laptop-Tracker/pkgs/container/laptop-tracker)
 
